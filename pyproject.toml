@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pbr2rad"
+version = "0.1.0"
+description = "Convert PBR texture sets into Radiance material libraries"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Rad-stuff" }]
+dependencies = [
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+pbr2rad = "pbr2rad.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
