@@ -58,11 +58,24 @@ class TestWriteDat2D:
 
         text = dat_path.read_text()
         lines = text.strip().split("\n")
-        # Row 0: 0.1, 0.2, 0.3
+        # Row 0: 0.100, 0.200, 0.300
         row0 = [float(v) for v in lines[3].split()]
         assert len(row0) == 3
-        assert abs(row0[0] - 0.1) < 1e-4
-        assert abs(row0[2] - 0.3) < 1e-4
+        assert abs(row0[0] - 0.1) < 1e-3
+        assert abs(row0[2] - 0.3) < 1e-3
+
+    def test_compact_format(self, tmp_path):
+        """Values are written with 3 decimal places, not full float precision."""
+        dat_path = tmp_path / "compact.dat"
+        data = [0.501961, 0.247059]  # typical 8-bit normal map values
+        write_dat_2d(dat_path, data, 2, 1)
+        text = dat_path.read_text()
+        lines = text.strip().split("\n")
+        row = lines[3]
+        # Each value should be like "0.502" not "0.501961"
+        vals = row.split("\t")
+        for v in vals:
+            assert len(v) <= 5, f"value {v!r} too long — should be compact"
 
 
 # ---------------------------------------------------------------------------

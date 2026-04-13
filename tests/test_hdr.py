@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from pbr2rad.hdr import _rgbe, convert_ldr_to_hdr, write_hdr
+from pbr2rad.hdr import _rgbe, _rle_encode_channel, convert_ldr_to_hdr, write_hdr
 
 
 def _decode_rgbe(r: int, g: int, b: int, e: int) -> tuple[float, float, float]:
@@ -53,3 +53,79 @@ def test_convert_ldr_to_hdr_srgb_decode(tmp_path: Path) -> None:
     decoded = _decode_rgbe(r, g, b, e)
     for channel in decoded:
         assert abs(channel - 0.2159) < 0.01, decoded
+
+
+# ---------------------------------------------------------------------------
+# RLE compression tests
+# ---------------------------------------------------------------------------
+
+def test_rle_encode_channel_run() -> None:
+    """A run of identical bytes produces a run marker."""
+    data = bytes([42] * 10)
+    encoded = _rle_encode_channel(data)
+    # Should be: (10 + 128), 42
+    assert encoded[0] == 10 + 128
+    assert encoded[1] == 42
+    assert len(encoded) == 2
+
+
+def test_rle_encode_channel_literal() -> None:
+    """Non-repeating bytes produce literal spans."""
+    data = bytes([1, 2, 3, 4, 5])
+    encoded = _rle_encode_channel(data)
+    # Should be: 5, 1, 2, 3, 4, 5
+    assert encoded[0] == 5
+    assert bytes(encoded[1:6]) == data
+    assert len(encoded) == 6
+
+
+def test_rle_encode_channel_mixed() -> None:
+    """Mix of literals and runs."""
+    data = bytes([10, 20, 30] + [99] * 8 + [50, 60])
+    encoded = _rle_encode_channel(data)
+    # Literal: 3, 10, 20, 30
+    # Run: (8+128), 99
+    # Literal: 2, 50, 60
+    assert encoded[0] == 3
+    assert encoded[4] == 8 + 128
+    assert encoded[5] == 99
+
+
+def test_rle_hdr_scanline_header(tmp_path: Path) -> None:
+    """RLE HDR scanlines start with 0x02 0x02 magic bytes."""
+    out = tmp_path / "rle.hdr"
+    pixels = [(0.5, 0.3, 0.1)] * 64
+    write_hdr(out, pixels, width=64, height=1, rle=True)
+    data = out.read_bytes()
+    # Find pixel data after header
+    res_line = b"-Y 1 +X 64\n"
+    idx = data.index(res_line) + len(res_line)
+    # First two bytes of scanline should be 0x02 0x02
+    assert data[idx] == 0x02
+    assert data[idx + 1] == 0x02
+    # Width encoded big-endian: 0, 64
+    assert data[idx + 2] == 0
+    assert data[idx + 3] == 64
+
+
+def test_rle_smaller_than_raw(tmp_path: Path) -> None:
+    """RLE output should be smaller than uncompressed for uniform data."""
+    pixels = [(0.5, 0.3, 0.1)] * (256 * 256)
+    rle_path = tmp_path / "rle.hdr"
+    raw_path = tmp_path / "raw.hdr"
+    write_hdr(rle_path, pixels, 256, 256, rle=True)
+    write_hdr(raw_path, pixels, 256, 256, rle=False)
+    assert rle_path.stat().st_size < raw_path.stat().st_size
+
+
+def test_rle_false_unchanged(tmp_path: Path) -> None:
+    """rle=False produces same output as the original uncompressed writer."""
+    out = tmp_path / "raw.hdr"
+    pixels = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    write_hdr(out, pixels, 2, 1, rle=False)
+    data = out.read_bytes()
+    res_line = b"-Y 1 +X 2\n"
+    idx = data.index(res_line) + len(res_line)
+    pixel_data = data[idx:]
+    # Uncompressed: exactly 8 bytes (2 pixels × 4 bytes)
+    assert len(pixel_data) == 8

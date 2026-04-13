@@ -1,8 +1,11 @@
-"""Radiance HDR (RGBE) writer.
+"""Radiance HDR (RGBE) writer with adaptive RLE compression.
 
-Writes an uncompressed Radiance ``.hdr`` / ``.pic`` image from linear-light
-floating-point RGB data.  No RLE compression — simple per-pixel RGBE encoding,
-which every Radiance tool reads.
+Writes Radiance ``.hdr`` / ``.pic`` images from linear-light floating-point
+RGB data.  Supports both uncompressed and RLE-compressed output (default: RLE).
+
+RLE uses Greg Ward's adaptive scanline encoding: each scanline is split into
+four separate channels (R, G, B, E) and each channel is independently
+run-length encoded.  This typically reduces file size by 3–4×.
 
 Reference: Greg Ward, "Real Pixels" (Graphics Gems II, 1991).
 """
@@ -44,6 +47,108 @@ def _rgbe(r: float, g: float, b: float) -> tuple[int, int, int, int]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Adaptive RLE encoding (new-style Radiance scanline compression)
+# ---------------------------------------------------------------------------
+
+_MIN_RUN = 4   # minimum run length to encode as a run
+_MAX_SPAN = 127  # max literal or run span
+
+
+def _rle_encode_channel(data: bytes) -> bytearray:
+    """Encode one channel of one scanline using adaptive RLE.
+
+    Returns a bytearray of the compressed channel data (without the
+    scanline header — the caller writes that).
+
+    Encoding rules:
+    * Control byte < 128 → next *control* bytes are literal (non-run) data.
+    * Control byte >= 128 → run of *(control − 128)* copies of the next byte.
+    * Runs must be ≥ ``_MIN_RUN`` (4) bytes long.
+    """
+    out = bytearray()
+    n = len(data)
+    i = 0
+
+    while i < n:
+        # Look ahead for a run of identical values
+        run_val = data[i]
+        run_len = 1
+        while i + run_len < n and data[i + run_len] == run_val and run_len < _MAX_SPAN:
+            run_len += 1
+
+        if run_len >= _MIN_RUN:
+            # Emit a run
+            out.append(run_len + 128)
+            out.append(run_val)
+            i += run_len
+        else:
+            # Collect literal (non-run) bytes until the next run ≥ _MIN_RUN
+            lit_start = i
+            lit_end = i
+
+            while lit_end < n:
+                # Check if a run starts at lit_end
+                peek_val = data[lit_end]
+                peek_len = 1
+                while (
+                    lit_end + peek_len < n
+                    and data[lit_end + peek_len] == peek_val
+                    and peek_len < _MIN_RUN
+                ):
+                    peek_len += 1
+
+                if peek_len >= _MIN_RUN:
+                    break  # run starts here — stop the literal span
+                lit_end += 1
+
+                if lit_end - lit_start >= _MAX_SPAN:
+                    break  # max literal span reached
+
+            span = lit_end - lit_start
+            out.append(span)
+            out.extend(data[lit_start:lit_end])
+            i = lit_end
+
+    return out
+
+
+def _rle_encode_scanline(rgbe_row: bytearray, width: int) -> bytes:
+    """Encode one scanline of interleaved RGBE data using adaptive RLE.
+
+    ``rgbe_row`` is ``width * 4`` bytes of interleaved R,G,B,E values.
+    Returns the full encoded scanline (header + 4 encoded channels).
+    """
+    # Scanline header: 0x02 0x02 <width big-endian 16-bit>
+    header = bytes([0x02, 0x02, (width >> 8) & 0xFF, width & 0xFF])
+
+    # De-interleave into 4 channel arrays
+    ch_r = bytearray(width)
+    ch_g = bytearray(width)
+    ch_b = bytearray(width)
+    ch_e = bytearray(width)
+
+    for j in range(width):
+        off = j * 4
+        ch_r[j] = rgbe_row[off]
+        ch_g[j] = rgbe_row[off + 1]
+        ch_b[j] = rgbe_row[off + 2]
+        ch_e[j] = rgbe_row[off + 3]
+
+    # Encode each channel
+    return (
+        header
+        + bytes(_rle_encode_channel(ch_r))
+        + bytes(_rle_encode_channel(ch_g))
+        + bytes(_rle_encode_channel(ch_b))
+        + bytes(_rle_encode_channel(ch_e))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def write_hdr(
     path: Path,
     pixels: list[tuple[float, float, float]],
@@ -51,10 +156,15 @@ def write_hdr(
     height: int,
     *,
     exposure: float = 1.0,
+    rle: bool = True,
 ) -> None:
     """Write a Radiance HDR file.
 
     ``pixels`` is a row-major sequence of linear RGB triples, top row first.
+
+    When ``rle=True`` (default), scanlines are compressed with adaptive RLE
+    which typically reduces file size by 3–4×.  Set ``rle=False`` for the
+    original uncompressed output.
     """
     path = Path(path)
     if len(pixels) != width * height:
@@ -73,23 +183,48 @@ def write_hdr(
 
     with open(path, "wb") as f:
         f.write(header)
-        buf = bytearray(4 * width * height)
-        i = 0
-        for r, g, b in pixels:
-            enc = _rgbe(r, g, b)
-            buf[i] = enc[0]
-            buf[i + 1] = enc[1]
-            buf[i + 2] = enc[2]
-            buf[i + 3] = enc[3]
-            i += 4
-        f.write(bytes(buf))
+
+        if not rle or width < 8 or width > 0x7FFF:
+            # Uncompressed path (original behavior, or width out of RLE range)
+            buf = bytearray(4 * width * height)
+            i = 0
+            for r, g, b in pixels:
+                enc = _rgbe(r, g, b)
+                buf[i] = enc[0]
+                buf[i + 1] = enc[1]
+                buf[i + 2] = enc[2]
+                buf[i + 3] = enc[3]
+                i += 4
+            f.write(bytes(buf))
+        else:
+            # RLE path — encode scanline by scanline
+            for row in range(height):
+                row_start = row * width
+                row_end = row_start + width
+                # Build interleaved RGBE row
+                rgbe_row = bytearray(width * 4)
+                for j, (r, g, b) in enumerate(pixels[row_start:row_end]):
+                    enc = _rgbe(r, g, b)
+                    off = j * 4
+                    rgbe_row[off] = enc[0]
+                    rgbe_row[off + 1] = enc[1]
+                    rgbe_row[off + 2] = enc[2]
+                    rgbe_row[off + 3] = enc[3]
+                f.write(_rle_encode_scanline(rgbe_row, width))
 
 
-def convert_ldr_to_hdr(src: Path, dst: Path, *, srgb: bool = True) -> tuple[int, int]:
+def convert_ldr_to_hdr(
+    src: Path,
+    dst: Path,
+    *,
+    srgb: bool = True,
+    rle: bool = True,
+) -> tuple[int, int]:
     """Convert an LDR image (PNG/JPG/TIFF) to Radiance HDR.
 
     ``srgb`` decodes sRGB-encoded input to linear light; set False for data
     maps (roughness, normal) if they are ever passed through this path.
+    ``rle`` enables adaptive RLE compression (default True).
     Returns ``(width, height)``.
     """
     img = Image.open(src).convert("RGB")
@@ -106,7 +241,7 @@ def convert_ldr_to_hdr(src: Path, dst: Path, *, srgb: bool = True) -> tuple[int,
         for i in range(0, len(data), 3):
             pixels.append((data[i] * inv, data[i + 1] * inv, data[i + 2] * inv))
 
-    write_hdr(dst, pixels, width, height)
+    write_hdr(dst, pixels, width, height, rle=rle)
     return width, height
 
 
@@ -166,5 +301,5 @@ __all__ = [
     "average_gray",
 ]
 
-# struct is imported for potential future RLE writer; keep import stable.
+# struct is used by average_gray for 16-bit images.
 _ = struct

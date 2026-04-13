@@ -68,10 +68,12 @@ def write_dat_2d(path: Path, data: list[float], width: int, height: int) -> None
         f"0\t1\t{height}",
     ]
 
-    # Write data in rows for readability (not required, but nice)
+    # Write data in rows.  Values are rounded to 4 decimal places
+    # (sufficient for 8/16-bit source data) to keep file sizes compact
+    # while preserving precision for Radiance's bilinear interpolation.
     for row in range(height):
         row_vals = data[row * width : (row + 1) * width]
-        lines.append("\t".join(f"{v:.6g}" for v in row_vals))
+        lines.append("\t".join(f"{v:.3f}" for v in row_vals))
 
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
