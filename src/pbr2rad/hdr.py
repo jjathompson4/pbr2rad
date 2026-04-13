@@ -134,8 +134,24 @@ def average_rgb(src: Path, *, srgb: bool = True) -> tuple[float, float, float]:
 
 
 def average_gray(src: Path) -> float:
-    """Mean 0..1 luminance of a single-channel data map (e.g. roughness)."""
-    img = Image.open(src).convert("L")
+    """Mean 0..1 luminance of a single-channel data map (e.g. roughness).
+
+    Handles both 8-bit and 16-bit images correctly.
+    """
+    img = Image.open(src)
+    mode = img.mode
+
+    if mode in ("I;16", "I"):
+        # 16-bit image — read raw 16-bit values to avoid Pillow's
+        # lossy conversion to 8-bit "L" mode which saturates values.
+        data = img.tobytes()
+        if not data:
+            return 0.0
+        pixels = struct.unpack(f"<{len(data) // 2}H", data)
+        return sum(pixels) / (65535.0 * len(pixels))
+
+    # 8-bit path (original behaviour)
+    img = img.convert("L")
     data = img.tobytes()
     if not data:
         return 0.0

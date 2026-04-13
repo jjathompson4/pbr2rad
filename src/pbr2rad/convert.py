@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import cal as cal_mod
 from . import hdr as hdr_mod
+from . import normal as normal_mod
 from . import rad as rad_mod
 from .discover import PBRSet
 
@@ -22,6 +23,8 @@ class ConvertOptions:
     v_offset: float = 0.0
     roughness_override: float | None = None
     metalness_override: float | None = None
+    normal: bool = True              # use normal map if discovered
+    bump_scale: float = 1.0          # normal map perturbation strength
 
 
 @dataclass
@@ -89,12 +92,39 @@ def convert_set(
     else:
         metalness = 0.0
 
+    # 4. Normal map (optional)
+    normal_kwargs: dict = {}
+    if opts.normal and pbr.normal is not None:
+        convention = normal_mod.detect_convention(pbr.maps)
+        is_dx = convention == "dx"
+
+        dat_r, dat_g, dat_b, _nw, _nh = normal_mod.convert_normal_to_dat(
+            pbr.normal, out_dir, pbr.name,
+        )
+        normal_cal_name = f"{pbr.name}_normal.cal"
+        # The normal .cal must include projection definitions (u, v)
+        # because texdata's funcfile is the only .cal file it loads.
+        normal_cal_text = cal_text + "\n" + normal_mod.generate_normal_cal(
+            pbr.name, is_dx=is_dx,
+        )
+        (out_dir / normal_cal_name).write_text(normal_cal_text, encoding="ascii")
+
+        normal_kwargs = dict(
+            normal_dat_r=dat_r,
+            normal_dat_g=dat_g,
+            normal_dat_b=dat_b,
+            normal_cal_file=normal_cal_name,
+            bump_scale=opts.bump_scale,
+            normal_is_dx=is_dx,
+        )
+
     mat = rad_mod.MaterialParams(
         name=pbr.name,
         hdr_file=hdr_file.name,   # relative — resolved alongside the .rad file
         cal_file=cal_file.name,
         roughness=roughness,
         metalness=metalness,
+        **normal_kwargs,
     )
     rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
 

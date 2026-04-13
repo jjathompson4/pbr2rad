@@ -31,7 +31,10 @@ def test_convert_set_end_to_end(tmp_path: Path) -> None:
     assert abs(result.roughness - 0.5) < 0.01
 
     rad_text = result.rad_file.read_text()
-    assert "wood_floor_pat plastic wood_floor" in rad_text
+    # Normal map is present, so texdata chain is used
+    assert "texdata wood_floor_tex" in rad_text
+    assert "9 dx_func dy_func dz_func" in rad_text
+    assert "wood_floor_tex plastic wood_floor" in rad_text
     assert "wood_floor.hdr" in rad_text
     assert "wood_floor.cal" in rad_text
 

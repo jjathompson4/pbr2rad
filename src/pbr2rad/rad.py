@@ -28,9 +28,22 @@ class MaterialParams:
     metalness: float = 0.0  # 0..1
     specularity: float | None = None  # override; None → auto (0.05 plastic / 1 metal)
 
+    # Normal map (texdata) support — all three must be set, or all None.
+    normal_dat_r: str | None = None
+    normal_dat_g: str | None = None
+    normal_dat_b: str | None = None
+    normal_cal_file: str | None = None
+    bump_scale: float = 1.0
+    normal_is_dx: bool = False
+
     def as_primitive(self) -> str:
         """Return ``"plastic"`` or ``"metal"`` based on metalness."""
         return "metal" if self.metalness >= 0.5 else "plastic"
+
+    @property
+    def has_normal(self) -> bool:
+        """True if normal map data files are configured."""
+        return self.normal_dat_r is not None
 
 
 def _rad_roughness(perceptual: float) -> float:
@@ -49,7 +62,12 @@ def _rad_specularity(params: MaterialParams) -> float:
 
 
 def generate(params: MaterialParams) -> str:
-    """Generate a Radiance ``.rad`` scene snippet for one material."""
+    """Generate a Radiance ``.rad`` scene snippet for one material.
+
+    If normal map data is configured, a ``texdata`` modifier is inserted
+    between the ``colorpict`` pattern and the ``plastic``/``metal`` primitive
+    to provide surface-normal perturbation (bump mapping).
+    """
     prim = params.as_primitive()
     spec = _rad_specularity(params)
     rough = _rad_roughness(params.roughness)
@@ -65,7 +83,27 @@ def generate(params: MaterialParams) -> str:
         "0",
         "0",
         "",
-        f"{pat} {prim} {params.name}",
+    ]
+
+    if params.has_normal:
+        tex = f"{params.name}_tex"
+        lines += [
+            f"# Normal map perturbation (texdata)",
+            f"{pat} texdata {tex}",
+            (
+                f"9 dx_func dy_func dz_func "
+                f"{params.normal_dat_r} {params.normal_dat_g} {params.normal_dat_b} "
+                f"{params.normal_cal_file} u v"
+            ),
+            "0",
+            f"1 {params.bump_scale:g}",
+            "",
+            f"{tex} {prim} {params.name}",
+        ]
+    else:
+        lines.append(f"{pat} {prim} {params.name}")
+
+    lines += [
         "0",
         "0",
         f"5 1 1 1 {spec:g} {rough:g}",

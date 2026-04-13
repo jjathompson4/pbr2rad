@@ -10,14 +10,18 @@ from .convert import ConvertOptions, convert_set, write_manifest
 from .discover import discover_many
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="pbr2rad",
-        description=(
-            "Convert PBR texture sets (Poly Haven / ambientCG style) into a "
-            "Radiance material library folder (.rad/.cal/.hdr)."
-        ),
-    )
+def _build_convert_parser(
+    p: argparse.ArgumentParser | None = None,
+) -> argparse.ArgumentParser:
+    """Build (or populate) the convert argument parser."""
+    if p is None:
+        p = argparse.ArgumentParser(
+            prog="pbr2rad",
+            description=(
+                "Convert PBR texture sets (Poly Haven / ambientCG style) into a "
+                "Radiance material library folder (.rad/.cal/.hdr)."
+            ),
+        )
     p.add_argument("input", type=Path, help="PBR set folder, or parent folder of sets")
     p.add_argument("-o", "--output", type=Path, required=True, help="Output library folder")
     p.add_argument(
@@ -48,13 +52,47 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override metalness (0..1). Default: mean of metalness map, or 0.",
     )
+    p.add_argument(
+        "--no-normal",
+        action="store_true",
+        help="Skip normal map even if one is discovered.",
+    )
+    p.add_argument(
+        "--bump-scale",
+        type=float,
+        default=1.0,
+        help="Normal map perturbation strength (default: 1.0).",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+def _build_fetch_parser(
+    p: argparse.ArgumentParser | None = None,
+) -> argparse.ArgumentParser:
+    """Build (or populate) the fetch argument parser."""
+    if p is None:
+        p = argparse.ArgumentParser(prog="pbr2rad fetch")
+    p.add_argument("slug", help="Poly Haven asset slug (e.g. 'wood_floor_03')")
+    p.add_argument("-o", "--output", type=Path, required=True, help="Output folder")
+    p.add_argument(
+        "--resolution",
+        choices=("1k", "2k", "4k", "8k"),
+        default="2k",
+        help="Texture resolution to download (default: 2k).",
+    )
+    p.add_argument(
+        "--format",
+        dest="fmt",
+        choices=("png", "jpg", "exr"),
+        default="png",
+        help="Image format to download (default: png).",
+    )
+    p.add_argument("-v", "--verbose", action="store_true")
+    return p
 
+
+def _run_convert(args: argparse.Namespace) -> int:
     if not args.input.exists():
         print(f"error: input not found: {args.input}", file=sys.stderr)
         return 2
@@ -70,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         v_offset=args.v_offset,
         roughness_override=args.roughness,
         metalness_override=args.metalness,
+        normal=not args.no_normal,
+        bump_scale=args.bump_scale,
     )
 
     sets = discover_many(args.input)
@@ -105,6 +145,46 @@ def main(argv: list[str] | None = None) -> int:
     if skipped:
         print(f"({skipped} set(s) skipped)")
     return 0
+
+
+def _run_fetch(args: argparse.Namespace) -> int:
+    from .fetch import FetchError, download_texture_set
+
+    try:
+        mat_dir = download_texture_set(
+            args.slug,
+            args.output,
+            resolution=args.resolution,
+            fmt=args.fmt,
+            verbose=args.verbose,
+        )
+    except FetchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"downloaded: {mat_dir}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point.  Dispatches to ``convert`` (default) or ``fetch``."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # Detect subcommand: if the first argument is "fetch", route there.
+    # Everything else goes through the convert path (backwards compatible).
+    if argv and argv[0] == "fetch":
+        parser = _build_fetch_parser()
+        args = parser.parse_args(argv[1:])
+        return _run_fetch(args)
+
+    # Strip optional "convert" prefix for explicit subcommand usage.
+    if argv and argv[0] == "convert":
+        argv = argv[1:]
+
+    parser = _build_convert_parser()
+    args = parser.parse_args(argv)
+    return _run_convert(args)
 
 
 if __name__ == "__main__":
