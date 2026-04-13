@@ -25,33 +25,69 @@ Requires Python 3.10+ and Pillow. No dependency on Blender, Rhino, or any GUI.
 
 ## Usage
 
+### Fetch materials from Poly Haven
+
+```bash
+# Download a PBR texture set:
+pbr2rad fetch wood_floor -o /materials --resolution 2k -v
+
+# Other resolutions / formats:
+pbr2rad fetch cobblestone_01 -o /materials --resolution 4k --format png
+```
+
+### Convert to Radiance
+
 ```bash
 # One PBR set:
-pbr2rad /polyhaven/wood_floor_03 -o /rad_materials
+pbr2rad /materials/wood_floor -o /rad_materials
 
 # A parent folder containing many sets (each subfolder is one material):
-pbr2rad /polyhaven_downloads -o /rad_materials --projection uv
+pbr2rad /materials -o /rad_materials --projection uv
 
 # Native Radiance geometry without UVs — use a planar projection:
-pbr2rad /polyhaven/wood_floor_03 -o /rad_materials \
+pbr2rad /materials/wood_floor -o /rad_materials \
     --projection planar --planar-axis xy \
     --u-scale 1.0 --v-scale 1.0
 
 # Irregular geometry (no UVs, multiple surface orientations):
-pbr2rad /polyhaven/concrete -o /rad_materials --projection box --u-scale 0.5 --v-scale 0.5
+pbr2rad /materials/concrete -o /rad_materials --projection box --u-scale 0.5 --v-scale 0.5
+
+# Column or pipe geometry:
+pbr2rad /materials/brick -o /rad_materials --projection cylindrical --u-scale 2 --v-scale 2
+
+# Dome or sphere geometry:
+pbr2rad /materials/stone -o /rad_materials --projection spherical --u-scale 1 --v-scale 1
+```
+
+### Options
+
+```
+--projection {uv,planar,box,cylindrical,spherical}
+--planar-axis {xy,xz,yz}      Axis pair for planar mode
+--u-scale, --v-scale           Texture tiling scale
+--u-offset, --v-offset         Texture offset
+--roughness FLOAT              Override roughness (0..1)
+--metalness FLOAT              Override metalness (0..1)
+--bump-scale FLOAT             Normal map strength (default: 1.0)
+--no-normal                    Skip normal map processing
+--no-varying-roughness         Use mean roughness instead of per-pixel
+-v, --verbose                  Show detailed output
 ```
 
 ### Projection modes
 
-| Mode     | When to use                                                   |
-|----------|---------------------------------------------------------------|
-| `uv`     | **Primary.** Any mesh with UVs (OBJ imported via `obj2mesh`). |
-| `planar` | Native Radiance geometry on a known axis pair.                |
-| `box`    | Native geometry with irregular orientation (triplanar).       |
+| Mode           | When to use                                                   |
+|----------------|---------------------------------------------------------------|
+| `uv`           | **Primary.** Any mesh with UVs (OBJ imported via `obj2mesh`). |
+| `planar`       | Native Radiance geometry on a known axis pair.                |
+| `box`          | Native geometry with irregular orientation (triplanar).       |
+| `cylindrical`  | Columns, pipes, cylinders (wraps around Z axis).              |
+| `spherical`    | Domes, globes, spheres (equirectangular mapping).             |
 
 `uv` emits a trivial `u = Lu; v = Lv;` passthrough. `planar` and `box` use
-`Px/Py/Pz` and the surface normal; tune with `--u-scale` / `--v-scale`
-(world-unit tiles per texture).
+`Px/Py/Pz` and the surface normal. `cylindrical` uses `atan2` around Z.
+`spherical` uses `atan2`/`asin` for equirectangular mapping. Tune all modes
+with `--u-scale` / `--v-scale` (world-unit tiles per texture).
 
 ## Input
 
@@ -60,52 +96,72 @@ conventions are recognised automatically, as is anything using the keywords
 `diff/albedo/color`, `rough`, `metal`, `nor`/`normal`, `disp`/`height`.
 
 ```
-wood_floor_03/
-├── wood_floor_03_diff_2k.png    (albedo, sRGB)
-├── wood_floor_03_rough_2k.png   (roughness)
-├── wood_floor_03_nor_gl_2k.png  (normal, OpenGL) — not used in MVP
-└── wood_floor_03_disp_2k.png    (displacement)   — not used in MVP
+wood_floor/
+├── wood_floor_diff_2k.png     (albedo, sRGB)
+├── wood_floor_rough_2k.png    (roughness)
+├── wood_floor_nor_gl_2k.png   (normal, OpenGL)
+└── wood_floor_disp_2k.png     (displacement — not used)
 ```
 
 ## Output
 
 ```
-rad_materials/wood_floor_03/
-├── wood_floor_03.rad    # colorpict + plastic/metal material definition
-├── wood_floor_03.cal    # projection function
-└── wood_floor_03.hdr    # albedo converted to linear Radiance HDR
+rad_materials/wood_floor/
+├── wood_floor.rad             # full modifier chain
+├── wood_floor.cal             # projection function (for colorpict)
+├── wood_floor.hdr             # albedo (RLE-compressed Radiance HDR)
+├── wood_floor_nor_r.dat       # normal map R channel
+├── wood_floor_nor_g.dat       # normal map G channel
+├── wood_floor_nor_b.dat       # normal map B channel
+├── wood_floor_normal.cal      # normal perturbation functions
+├── wood_floor_rough.dat       # roughness map data
+└── wood_floor_rough.cal       # roughness modulation function
 rad_materials/manifest.json
 ```
 
-Example `.rad` output:
+Example `.rad` output (full modifier chain):
 
 ```radiance
-void colorpict wood_floor_03_pat
-7 red green blue wood_floor_03.hdr wood_floor_03.cal u v
+void colorpict wood_floor_pat
+7 red green blue wood_floor.hdr wood_floor.cal u v
 0
 0
 
-wood_floor_03_pat plastic wood_floor_03
+wood_floor_pat texdata wood_floor_tex
+9 dx_func dy_func dz_func wood_floor_nor_r.dat ...
+0
+1 1
+
+wood_floor_tex brightdata wood_floor_rough
+5 rough_func wood_floor_rough.dat wood_floor_rough.cal u v
+0
+1 0.8
+
+wood_floor_rough plastic wood_floor
 0
 0
-5 1 1 1 0.05 0.25
+5 1 1 1 0.05 0.22
 ```
 
-## PBR → Radiance mapping
+## PBR to Radiance mapping
 
-| PBR channel                    | Radiance                                 | MVP?              |
-|--------------------------------|------------------------------------------|-------------------|
-| Albedo (diffuse, sRGB)         | `colorpict` on linear `.hdr`             | yes               |
-| Roughness                      | `plastic`/`metal` roughness (α = r²)     | yes (mean value)  |
-| Roughness (spatially varying)  | `brightdata` modifier                    | post-MVP          |
-| Metalness                      | `plastic` vs `metal` primitive           | yes (mean value)  |
-| Normal map                     | `texfunc`/`texdata` perturbation         | post-MVP          |
-| Displacement                   | geometry modification (not material)     | no                |
+| PBR channel                    | Radiance                                  | Status            |
+|--------------------------------|-------------------------------------------|-------------------|
+| Albedo (diffuse, sRGB)         | `colorpict` on linear `.hdr` (RLE)        | done              |
+| Roughness (mean)               | `plastic`/`metal` roughness arg (a = r^2) | done              |
+| Roughness (spatially varying)  | `brightdata` specular modulation           | done              |
+| Metalness                      | `plastic` vs `metal` primitive            | done              |
+| Normal map (GL/DX)             | `texdata` perturbation (3x `.dat`)        | done              |
+| Displacement                   | geometry modification (not material)      | out of scope      |
 
-Roughness follows the common `α = r²` perceptual→microfacet mapping. Dielectric
-specularity defaults to `0.05` (F0 ≈ 4 %), which is the standard neutral value
-for non-metals. `metal` uses the albedo itself as specular reflectance and
-passes specularity 1.
+Roughness follows the common `a = r^2` perceptual-to-microfacet mapping.
+Dielectric specularity defaults to `0.05` (F0 ~ 4%), which is the standard
+neutral value for non-metals. `metal` uses the albedo itself as specular
+reflectance and passes specularity 1.
+
+Normal maps are automatically detected (OpenGL or DirectX convention) and
+converted to Radiance `texdata` perturbation. The green channel is flipped
+for DirectX maps.
 
 ## Testing
 
@@ -114,7 +170,20 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests cover: texture discovery (Poly Haven + ambientCG + resolution tiebreak),
-`.cal` generation for all three projection modes, `.rad` emission for plastic
-and metal, RGBE encode/decode round-trip, sRGB→linear correctness, and an
-end-to-end CLI run over a small synthetic library.
+78 tests covering: texture discovery, all five projection modes, material
+generation (plastic/metal/normal/brightdata chains), RGBE encode/decode
+round-trip, RLE compression, sRGB-to-linear correctness, 16-bit PNG handling,
+Poly Haven API mocking, and end-to-end CLI runs.
+
+## Visual verification
+
+```bash
+# Render a checkerboard cube to verify box projection:
+python scripts/verify_box.py
+
+# Full pipeline: fetch, convert, render
+pbr2rad fetch cobblestone_01 -o /tmp/materials --resolution 2k -v
+pbr2rad /tmp/materials/cobblestone_01 -o /tmp/rad --projection box --u-scale 3 --v-scale 3
+oconv /tmp/rad/cobblestone_01/cobblestone_01.rad scene.rad > scene.oct
+rpict [view args] scene.oct > out.hdr
+```
