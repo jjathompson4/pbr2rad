@@ -1,4 +1,4 @@
-"""Tests for normal map support (texdata perturbation)."""
+"""Tests for normal map support (texdata) and roughness (brightdata)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ from PIL import Image
 
 from pbr2rad.normal import (
     convert_normal_to_dat,
+    convert_roughness_to_dat,
     detect_convention,
     generate_normal_cal,
+    generate_roughness_cal,
     write_dat_2d,
 )
 from pbr2rad.rad import MaterialParams, generate
@@ -285,3 +287,120 @@ class TestConvertWithNormal:
         rad_text = result.rad_file.read_text()
         assert "texdata" not in rad_text
         assert not (out / "wood" / "wood_nor_r.dat").exists()
+
+
+# ---------------------------------------------------------------------------
+# Tests: spatially varying roughness (brightdata)
+# ---------------------------------------------------------------------------
+
+class TestConvertRoughnessToDat:
+    def test_produces_dat_file(self, tmp_path):
+        rough_png = tmp_path / "rough.png"
+        Image.new("L", (8, 8), 128).save(rough_png)
+
+        dat_name, w, h = convert_roughness_to_dat(rough_png, tmp_path, "test")
+        assert (tmp_path / dat_name).exists()
+        assert dat_name == "test_rough.dat"
+        assert w == 8
+        assert h == 8
+
+    def test_values_in_range(self, tmp_path):
+        rough_png = tmp_path / "rough.png"
+        Image.new("L", (4, 4), 200).save(rough_png)
+
+        dat_name, _, _ = convert_roughness_to_dat(rough_png, tmp_path, "test")
+        text = (tmp_path / dat_name).read_text()
+        lines = text.strip().split("\n")[3:]  # skip header
+        for line in lines:
+            for val in line.split():
+                f = float(val)
+                assert 0.0 <= f <= 1.0
+
+
+class TestGenerateRoughnessCal:
+    def test_contains_rough_func(self):
+        cal = generate_roughness_cal("stone")
+        assert "rough_func" in cal
+        assert "A1" in cal
+
+    def test_inverts_roughness(self):
+        cal = generate_roughness_cal("stone")
+        # rough_func should subtract roughness from 1
+        assert "1 - A1" in cal or "1-A1" in cal
+
+
+class TestBrightdataChain:
+    def test_brightdata_in_chain(self):
+        from pbr2rad.rad import MaterialParams, generate
+
+        params = MaterialParams(
+            name="stone",
+            hdr_file="stone.hdr",
+            cal_file="stone.cal",
+            rough_dat="stone_rough.dat",
+            rough_cal_file="stone_rough.cal",
+        )
+        rad = generate(params)
+        assert "brightdata stone_rough" in rad
+        assert "rough_func" in rad
+        assert "stone_rough.dat" in rad
+        assert "stone_rough.cal" in rad
+        assert "stone_rough plastic stone" in rad
+
+    def test_no_rough_map_no_brightdata(self):
+        from pbr2rad.rad import MaterialParams, generate
+
+        params = MaterialParams(
+            name="stone",
+            hdr_file="stone.hdr",
+            cal_file="stone.cal",
+        )
+        rad = generate(params)
+        assert "brightdata" not in rad
+
+    def test_full_chain_normal_plus_roughness(self):
+        from pbr2rad.rad import MaterialParams, generate
+
+        params = MaterialParams(
+            name="stone",
+            hdr_file="stone.hdr",
+            cal_file="stone.cal",
+            normal_dat_r="stone_nor_r.dat",
+            normal_dat_g="stone_nor_g.dat",
+            normal_dat_b="stone_nor_b.dat",
+            normal_cal_file="stone_normal.cal",
+            rough_dat="stone_rough.dat",
+            rough_cal_file="stone_rough.cal",
+        )
+        rad = generate(params)
+        # Full chain: colorpict → texdata → brightdata → plastic
+        assert "colorpict stone_pat" in rad
+        assert "texdata stone_tex" in rad
+        assert "brightdata stone_rough" in rad
+        assert "stone_rough plastic stone" in rad
+
+    def test_convert_with_varying_roughness(self, tmp_path):
+        from pbr2rad.convert import ConvertOptions, convert_set
+        from pbr2rad.discover import PBRSet
+
+        mat_dir = tmp_path / "stone"
+        mat_dir.mkdir()
+        albedo = mat_dir / "stone_diff_2k.png"
+        Image.new("RGB", (16, 16), (150, 140, 130)).save(albedo)
+        rough = mat_dir / "stone_rough_2k.png"
+        Image.new("L", (16, 16), 180).save(rough)
+
+        pbr = PBRSet(
+            name="stone",
+            root=mat_dir,
+            maps={"albedo": albedo, "roughness": rough},
+        )
+
+        out = tmp_path / "out"
+        opts = ConvertOptions(varying_roughness=True, normal=False)
+        result = convert_set(pbr, out, opts)
+
+        assert (out / "stone" / "stone_rough.dat").exists()
+        assert (out / "stone" / "stone_rough.cal").exists()
+        rad_text = result.rad_file.read_text()
+        assert "brightdata" in rad_text

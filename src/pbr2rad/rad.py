@@ -36,6 +36,11 @@ class MaterialParams:
     bump_scale: float = 1.0
     normal_is_dx: bool = False
 
+    # Spatially varying roughness (brightdata) support.
+    rough_dat: str | None = None
+    rough_cal_file: str | None = None
+    rough_modulation: float = 0.8  # how much roughness varies specular (0=none, 1=full)
+
     def as_primitive(self) -> str:
         """Return ``"plastic"`` or ``"metal"`` based on metalness."""
         return "metal" if self.metalness >= 0.5 else "plastic"
@@ -44,6 +49,11 @@ class MaterialParams:
     def has_normal(self) -> bool:
         """True if normal map data files are configured."""
         return self.normal_dat_r is not None
+
+    @property
+    def has_rough_map(self) -> bool:
+        """True if spatially varying roughness data is configured."""
+        return self.rough_dat is not None
 
 
 def _rad_roughness(perceptual: float) -> float:
@@ -85,11 +95,15 @@ def generate(params: MaterialParams) -> str:
         "",
     ]
 
+    # Build the modifier chain: colorpict → [texdata] → [brightdata] → material
+    # Track the current modifier name as we chain them.
+    current_mod = pat
+
     if params.has_normal:
         tex = f"{params.name}_tex"
         lines += [
             f"# Normal map perturbation (texdata)",
-            f"{pat} texdata {tex}",
+            f"{current_mod} texdata {tex}",
             (
                 f"9 dx_func dy_func dz_func "
                 f"{params.normal_dat_r} {params.normal_dat_g} {params.normal_dat_b} "
@@ -98,12 +112,26 @@ def generate(params: MaterialParams) -> str:
             "0",
             f"1 {params.bump_scale:g}",
             "",
-            f"{tex} {prim} {params.name}",
         ]
-    else:
-        lines.append(f"{pat} {prim} {params.name}")
+        current_mod = tex
+
+    if params.has_rough_map:
+        rough_id = f"{params.name}_rough"
+        lines += [
+            f"# Spatially varying roughness (brightdata)",
+            f"{current_mod} brightdata {rough_id}",
+            (
+                f"5 rough_func {params.rough_dat} "
+                f"{params.rough_cal_file} u v"
+            ),
+            "0",
+            f"1 {params.rough_modulation:g}",
+            "",
+        ]
+        current_mod = rough_id
 
     lines += [
+        f"{current_mod} {prim} {params.name}",
         "0",
         "0",
         f"5 1 1 1 {spec:g} {rough:g}",

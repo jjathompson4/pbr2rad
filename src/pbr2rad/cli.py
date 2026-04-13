@@ -26,7 +26,7 @@ def _build_convert_parser(
     p.add_argument("-o", "--output", type=Path, required=True, help="Output library folder")
     p.add_argument(
         "--projection",
-        choices=("uv", "planar", "box"),
+        choices=("uv", "planar", "box", "cylindrical", "spherical"),
         default="uv",
         help="Projection mode. 'uv' uses mesh Lu/Lv (Radiance 6.0).",
     )
@@ -62,6 +62,11 @@ def _build_convert_parser(
         type=float,
         default=1.0,
         help="Normal map perturbation strength (default: 1.0).",
+    )
+    p.add_argument(
+        "--no-varying-roughness",
+        action="store_true",
+        help="Use mean roughness instead of spatially varying roughness map.",
     )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -110,6 +115,7 @@ def _run_convert(args: argparse.Namespace) -> int:
         metalness_override=args.metalness,
         normal=not args.no_normal,
         bump_scale=args.bump_scale,
+        varying_roughness=not args.no_varying_roughness,
     )
 
     sets = discover_many(args.input)

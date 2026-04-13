@@ -1,11 +1,12 @@
 """Radiance ``.cal`` projection function generators.
 
-Three projection modes are supported:
+Five projection modes are supported:
 
-* ``uv``     – mesh UV passthrough (Radiance 6.0, ``Lu``/``Lv``).  This is the
-               primary path for any mesh with embedded UVs.
-* ``planar`` – fallback planar projection on a chosen axis pair.
-* ``box``    – triplanar projection driven by surface normal.
+* ``uv``           – mesh UV passthrough (Radiance 6.0, ``Lu``/``Lv``).
+* ``planar``       – planar projection on a chosen axis pair.
+* ``box``          – triplanar projection driven by surface normal.
+* ``cylindrical``  – wraps around the Z axis (columns, pipes).
+* ``spherical``    – full spherical mapping (domes, globes).
 
 Functions return the raw ``.cal`` file text.
 """
@@ -84,6 +85,41 @@ def box(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
     )
 
 
+def cylindrical(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
+    """Cylindrical projection wrapping around the Z axis.
+
+    ``u`` maps the angle around Z (0..1 = full revolution).
+    ``v`` maps the Z height.  Suitable for columns, pipes, and cylinders.
+    """
+    return (
+        _HEADER.format(mode="cylindrical (Z axis)")
+        + f"u_scale : {u_scale:g};\n"
+        + f"v_scale : {v_scale:g};\n"
+        + "{ angle around Z axis, normalised to 0..1 }\n"
+        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale, 1);\n"
+        + "v = mod(Pz * v_scale, 1);\n"
+    )
+
+
+def spherical(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
+    """Spherical (equirectangular) projection.
+
+    ``u`` maps longitude (angle around Z).
+    ``v`` maps latitude (angle from equator, 0.5 = equator).
+    Suitable for domes, globes, and spheres.
+    """
+    return (
+        _HEADER.format(mode="spherical (equirectangular)")
+        + f"u_scale : {u_scale:g};\n"
+        + f"v_scale : {v_scale:g};\n"
+        + "r = sqrt(Px*Px + Py*Py + Pz*Pz);\n"
+        + "{ longitude: angle around Z axis }\n"
+        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale, 1);\n"
+        + "{ latitude: angle from equator, +0.5 so equator is at v=0.5 }\n"
+        + "v = mod(asin(Pz / r) / PI * v_scale + 0.5, 1);\n"
+    )
+
+
 def generate(
     mode: str,
     *,
@@ -106,4 +142,8 @@ def generate(
         )
     if mode == "box":
         return box(u_scale=u_scale, v_scale=v_scale)
+    if mode == "cylindrical":
+        return cylindrical(u_scale=u_scale, v_scale=v_scale)
+    if mode == "spherical":
+        return spherical(u_scale=u_scale, v_scale=v_scale)
     raise ValueError(f"unknown projection mode: {mode!r}")

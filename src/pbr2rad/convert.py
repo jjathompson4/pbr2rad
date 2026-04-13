@@ -25,6 +25,8 @@ class ConvertOptions:
     metalness_override: float | None = None
     normal: bool = True              # use normal map if discovered
     bump_scale: float = 1.0          # normal map perturbation strength
+    varying_roughness: bool = True   # use roughness map for brightdata if discovered
+    rough_modulation: float = 0.8    # how strongly roughness affects specular
 
 
 @dataclass
@@ -118,6 +120,23 @@ def convert_set(
             normal_is_dx=is_dx,
         )
 
+    # 5. Spatially varying roughness (optional)
+    rough_kwargs: dict = {}
+    if opts.varying_roughness and pbr.roughness is not None:
+        rough_dat, _rw, _rh = normal_mod.convert_roughness_to_dat(
+            pbr.roughness, out_dir, pbr.name,
+        )
+        rough_cal_name = f"{pbr.name}_rough.cal"
+        # Roughness .cal needs projection definitions (u, v) just like normal .cal
+        rough_cal_text = cal_text + "\n" + normal_mod.generate_roughness_cal(pbr.name)
+        (out_dir / rough_cal_name).write_text(rough_cal_text, encoding="ascii")
+
+        rough_kwargs = dict(
+            rough_dat=rough_dat,
+            rough_cal_file=rough_cal_name,
+            rough_modulation=opts.rough_modulation,
+        )
+
     mat = rad_mod.MaterialParams(
         name=pbr.name,
         hdr_file=hdr_file.name,   # relative — resolved alongside the .rad file
@@ -125,6 +144,7 @@ def convert_set(
         roughness=roughness,
         metalness=metalness,
         **normal_kwargs,
+        **rough_kwargs,
     )
     rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
 

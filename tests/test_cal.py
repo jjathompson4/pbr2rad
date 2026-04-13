@@ -35,6 +35,31 @@ def test_box_references_normal_components() -> None:
     assert "mod(" in text
 
 
+def test_cylindrical_uses_atan2() -> None:
+    text = cal.cylindrical(u_scale=2.0, v_scale=3.0)
+    assert "atan2(Py, Px)" in text
+    assert "Pz * v_scale" in text
+    assert "u_scale : 2" in text
+    assert "mod(" in text
+
+
+def test_spherical_uses_asin() -> None:
+    text = cal.spherical(u_scale=1.0, v_scale=1.0)
+    assert "atan2(Py, Px)" in text
+    assert "asin(" in text
+    assert "mod(" in text
+
+
+def test_generate_dispatch_cylindrical() -> None:
+    text = cal.generate("cylindrical", u_scale=1.0, v_scale=1.0)
+    assert "atan2" in text
+
+
+def test_generate_dispatch_spherical() -> None:
+    text = cal.generate("spherical", u_scale=1.0, v_scale=1.0)
+    assert "asin" in text
+
+
 def test_generate_dispatch_invalid() -> None:
     import pytest
 
