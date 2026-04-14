@@ -68,6 +68,11 @@ def _build_convert_parser(
         action="store_true",
         help="Use mean roughness instead of spatially varying roughness map.",
     )
+    p.add_argument(
+        "--no-estimate",
+        action="store_true",
+        help="Don't estimate missing normal/roughness maps from albedo.",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -116,6 +121,7 @@ def _run_convert(args: argparse.Namespace) -> int:
         normal=not args.no_normal,
         bump_scale=args.bump_scale,
         varying_roughness=not args.no_varying_roughness,
+        estimate_maps=not args.no_estimate,
     )
 
     sets = discover_many(args.input)
@@ -172,17 +178,50 @@ def _run_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_serve(argv: list[str]) -> int:
+    """Start the web server."""
+    import argparse as _ap
+
+    p = _ap.ArgumentParser(prog="pbr2rad serve")
+    p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8000, help="Port (default: 8000)")
+    p.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
+    args = p.parse_args(argv)
+
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "error: web dependencies not installed.\n"
+            "Run: pip install pbr2rad[web]",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Starting pbr2rad web server at http://{args.host}:{args.port}")
+    uvicorn.run(
+        "pbr2rad.web.app:create_app",
+        factory=True,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Entry point.  Dispatches to ``convert`` (default) or ``fetch``."""
+    """Entry point.  Dispatches to ``convert`` (default), ``fetch``, or ``serve``."""
     if argv is None:
         argv = sys.argv[1:]
 
-    # Detect subcommand: if the first argument is "fetch", route there.
-    # Everything else goes through the convert path (backwards compatible).
+    # Detect subcommand
     if argv and argv[0] == "fetch":
         parser = _build_fetch_parser()
         args = parser.parse_args(argv[1:])
         return _run_fetch(args)
+
+    if argv and argv[0] == "serve":
+        return _run_serve(argv[1:])
 
     # Strip optional "convert" prefix for explicit subcommand usage.
     if argv and argv[0] == "convert":

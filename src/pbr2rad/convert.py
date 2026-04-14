@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import cal as cal_mod
+from . import estimate as estimate_mod
 from . import hdr as hdr_mod
 from . import normal as normal_mod
 from . import rad as rad_mod
@@ -27,6 +28,7 @@ class ConvertOptions:
     bump_scale: float = 1.0          # normal map perturbation strength
     varying_roughness: bool = True   # use roughness map for brightdata if discovered
     rough_modulation: float = 0.8    # how strongly roughness affects specular
+    estimate_maps: bool = True       # estimate missing normal/roughness from albedo
 
 
 @dataclass
@@ -78,6 +80,17 @@ def convert_set(
         v_offset=opts.v_offset,
     )
     cal_file.write_text(cal_text, encoding="ascii")
+
+    # 2b. Estimate missing maps from albedo (if enabled)
+    if opts.estimate_maps:
+        if pbr.normal is None and opts.normal:
+            est_normal = out_dir / f"{pbr.name}_est_nor_gl.png"
+            estimate_mod.estimate_normal(pbr.albedo, est_normal, strength=opts.bump_scale)
+            pbr.maps["normal_gl"] = est_normal
+        if pbr.roughness is None and opts.varying_roughness:
+            est_rough = out_dir / f"{pbr.name}_est_rough.png"
+            estimate_mod.estimate_roughness(pbr.albedo, est_rough)
+            pbr.maps["roughness"] = est_rough
 
     # 3. Material parameters
     if opts.roughness_override is not None:

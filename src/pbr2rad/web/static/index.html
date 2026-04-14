@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pbr2rad</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>pbr2rad</h1>
+  <span>PBR to Radiance Material Converter</span>
+</header>
+
+<main>
+  <!-- Left: Source + Output -->
+  <div>
+    <!-- Source panel -->
+    <div class="panel" style="margin-bottom:1.5rem">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="upload">Upload Files</button>
+        <button class="tab-btn" data-tab="polyhaven">Poly Haven</button>
+      </div>
+
+      <!-- Upload tab -->
+      <div id="tab-upload" class="tab-content active">
+        <div class="dropzone" id="dropzone">
+          <p>Drop PBR texture files here</p>
+          <small>or click to browse (PNG, JPG, TIFF, EXR)</small>
+          <input type="file" id="file-input" multiple accept="image/*" style="display:none">
+        </div>
+        <table class="channel-table" id="channel-table" style="display:none">
+          <thead><tr><th>File</th><th>Channel</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <input type="text" id="material-name" placeholder="Material name (optional)" style="width:100%;padding:0.35rem;border:1px solid #ddd;border-radius:3px;margin-top:0.75rem;font-size:0.85rem">
+        <button class="btn btn-primary" id="convert-btn" disabled>Convert</button>
+      </div>
+
+      <!-- Poly Haven tab -->
+      <div id="tab-polyhaven" class="tab-content">
+        <input type="text" class="ph-search" id="ph-search" placeholder="Search Poly Haven textures...">
+        <div class="ph-grid" id="ph-grid"></div>
+        <div id="ph-detail" style="display:none;margin-top:0.75rem">
+          <strong id="ph-detail-name"></strong>
+          <div class="res-picker" id="ph-res-picker"></div>
+          <button class="btn btn-primary" id="ph-convert-btn" style="margin-top:0.5rem">Fetch &amp; Convert</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Output panel -->
+    <div class="panel" id="output-panel">
+      <h2>Output</h2>
+      <div class="status" id="status">Ready</div>
+      <img class="preview-img" id="preview-img" alt="Preview render">
+      <dl class="result-summary" id="result-summary" style="display:none"></dl>
+      <a class="btn btn-download" id="download-btn" style="display:none;text-align:center;text-decoration:none">Download .zip</a>
+    </div>
+  </div>
+
+  <!-- Right: Options -->
+  <div class="panel">
+    <h2>Options</h2>
+
+    <div class="option-group">
+      <label>Projection</label>
+      <select id="opt-projection">
+        <option value="uv">UV (mesh UVs)</option>
+        <option value="planar">Planar</option>
+        <option value="box" selected>Box / Triplanar</option>
+        <option value="cylindrical">Cylindrical</option>
+        <option value="spherical">Spherical</option>
+      </select>
+    </div>
+
+    <div class="option-group" id="opt-axis-group" style="display:none">
+      <label>Planar Axis</label>
+      <select id="opt-planar-axis">
+        <option value="xy">XY</option>
+        <option value="xz">XZ</option>
+        <option value="yz">YZ</option>
+      </select>
+    </div>
+
+    <div class="option-row">
+      <div class="option-group">
+        <label>U Scale</label>
+        <input type="number" id="opt-u-scale" value="1" step="0.1" min="0.01">
+      </div>
+      <div class="option-group">
+        <label>V Scale</label>
+        <input type="number" id="opt-v-scale" value="1" step="0.1" min="0.01">
+      </div>
+    </div>
+
+    <div class="option-row">
+      <div class="option-group">
+        <label>U Offset</label>
+        <input type="number" id="opt-u-offset" value="0" step="0.1">
+      </div>
+      <div class="option-group">
+        <label>V Offset</label>
+        <input type="number" id="opt-v-offset" value="0" step="0.1">
+      </div>
+    </div>
+
+    <hr style="margin:0.75rem 0;border:none;border-top:1px solid #eee">
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="opt-normal" checked>
+      <label for="opt-normal">Use normal map</label>
+    </div>
+
+    <div class="option-group" id="opt-bump-group">
+      <label>Bump Scale</label>
+      <input type="number" id="opt-bump-scale" value="1" step="0.1" min="0">
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="opt-varying-rough" checked>
+      <label for="opt-varying-rough">Varying roughness</label>
+    </div>
+
+    <hr style="margin:0.75rem 0;border:none;border-top:1px solid #eee">
+
+    <div class="option-group">
+      <label>Roughness Override (leave empty for auto)</label>
+      <input type="number" id="opt-roughness" step="0.01" min="0" max="1" placeholder="auto">
+    </div>
+
+    <div class="option-group">
+      <label>Metalness Override (leave empty for auto)</label>
+      <input type="number" id="opt-metalness" step="0.01" min="0" max="1" placeholder="auto">
+    </div>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
