@@ -44,7 +44,11 @@ def estimate_normal(
     """
     img = Image.open(albedo_path).convert("L")
     width, height = img.size
-    gray = img.tobytes()
+
+    # Enhance local contrast before Sobel to make subtle features visible.
+    # Use CLAHE-like approach: apply a local equalization via unsharp mask.
+    sharpened = img.filter(ImageFilter.UnsharpMask(radius=10, percent=200, threshold=0))
+    gray = sharpened.tobytes()
 
     def px(x: int, y: int) -> float:
         """Get pixel value as 0..1 float, clamped to image bounds."""
@@ -52,39 +56,53 @@ def estimate_normal(
         y = max(0, min(height - 1, y))
         return gray[y * width + x] / 255.0
 
-    # Sobel kernels applied per-pixel
-    normal_data = bytearray(width * height * 3)
+    # Compute Sobel gradients and find max magnitude for auto-scaling
+    gradients = []
     for y in range(height):
         for x in range(width):
-            # Sobel X: horizontal gradient
             gx = (
                 -1 * px(x - 1, y - 1) + 1 * px(x + 1, y - 1)
                 + -2 * px(x - 1, y)     + 2 * px(x + 1, y)
                 + -1 * px(x - 1, y + 1) + 1 * px(x + 1, y + 1)
             )
-            # Sobel Y: vertical gradient
             gy = (
                 -1 * px(x - 1, y - 1) + -2 * px(x, y - 1) + -1 * px(x + 1, y - 1)
                 + 1 * px(x - 1, y + 1) + 2 * px(x, y + 1) + 1 * px(x + 1, y + 1)
             )
+            gradients.append((gx, gy))
 
-            # Normal vector (OpenGL convention: Y up)
-            nx = -gx * strength
-            ny = -gy * strength
-            nz = 1.0
+    # Auto-scale: normalize gradients so the strongest edges produce
+    # a visible deflection.  This handles low-contrast images like
+    # dark tiles with subtle grout lines.
+    max_mag = max(
+        math.sqrt(gx * gx + gy * gy) for gx, gy in gradients
+    )
+    if max_mag < 1e-6:
+        max_mag = 1.0
+    # Scale so max gradient → ~0.7 deflection (strong but not extreme),
+    # then apply user strength on top.
+    auto_scale = 0.7 / max_mag
 
-            # Normalize
-            length = math.sqrt(nx * nx + ny * ny + nz * nz)
-            if length > 0:
-                nx /= length
-                ny /= length
-                nz /= length
+    normal_data = bytearray(width * height * 3)
+    for i, (gx, gy) in enumerate(gradients):
+        # Normal vector (OpenGL convention: Y up)
+        s = auto_scale * strength
+        nx = -gx * s
+        ny = -gy * s
+        nz = 1.0
 
-            # Remap [-1,+1] → [0,255]
-            idx = (y * width + x) * 3
-            normal_data[idx] = max(0, min(255, int((nx * 0.5 + 0.5) * 255)))
-            normal_data[idx + 1] = max(0, min(255, int((ny * 0.5 + 0.5) * 255)))
-            normal_data[idx + 2] = max(0, min(255, int((nz * 0.5 + 0.5) * 255)))
+        # Normalize
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if length > 0:
+            nx /= length
+            ny /= length
+            nz /= length
+
+        # Remap [-1,+1] → [0,255]
+        idx = i * 3
+        normal_data[idx] = max(0, min(255, int((nx * 0.5 + 0.5) * 255)))
+        normal_data[idx + 1] = max(0, min(255, int((ny * 0.5 + 0.5) * 255)))
+        normal_data[idx + 2] = max(0, min(255, int((nz * 0.5 + 0.5) * 255)))
 
     out = Image.frombytes("RGB", (width, height), bytes(normal_data))
     output_path = Path(output_path)
@@ -117,48 +135,67 @@ def estimate_roughness(
     img = Image.open(albedo_path).convert("L")
     width, height = img.size
 
-    # Compute local variance using box-blur approach:
-    # variance = E[x^2] - E[x]^2
-    # where E[] is the local mean computed via box blur.
+    # Two-pass approach for better roughness estimation:
+    # 1. Edge strength (Sobel magnitude) — edges/grout/seams → rough
+    # 2. Local texture variance — fine detail → rough, flat → smooth
+    # Combine both signals for a more useful roughness map.
 
-    # Create float arrays
-    pixels = [b / 255.0 for b in img.tobytes()]
-    pixels_sq = [p * p for p in pixels]
-
-    # Box blur for local mean and local mean-of-squares
-    # Use Pillow's built-in BoxBlur for speed
     radius = window // 2
 
+    # Pass 1: Sobel edge magnitude
+    edge_x = img.filter(ImageFilter.Kernel(
+        (3, 3), [-1, 0, 1, -2, 0, 2, -1, 0, 1], scale=1, offset=128,
+    ))
+    edge_y = img.filter(ImageFilter.Kernel(
+        (3, 3), [-1, -2, -1, 0, 0, 0, 1, 2, 1], scale=1, offset=128,
+    ))
+    ex_data = edge_x.tobytes()
+    ey_data = edge_y.tobytes()
+
+    edge_mag = []
+    for i in range(width * height):
+        dx = (ex_data[i] - 128) / 128.0
+        dy = (ey_data[i] - 128) / 128.0
+        edge_mag.append(math.sqrt(dx * dx + dy * dy))
+
+    # Pass 2: Local variance via box blur
     mean_img = img.filter(ImageFilter.BoxBlur(radius))
     mean_data = [b / 255.0 for b in mean_img.tobytes()]
+    pixels = [b / 255.0 for b in img.tobytes()]
 
-    sq_img = Image.frombytes("L", (width, height), bytes(max(0, min(255, int(p * 255))) for p in pixels_sq))
+    sq_img = Image.frombytes(
+        "L", (width, height),
+        bytes(max(0, min(255, int(p * p * 255))) for p in pixels),
+    )
     mean_sq_img = sq_img.filter(ImageFilter.BoxBlur(radius))
     mean_sq_data = [b / 255.0 for b in mean_sq_img.tobytes()]
 
-    # Variance = E[x^2] - E[x]^2
     variance = []
     for i in range(len(pixels)):
         v = max(0.0, mean_sq_data[i] - mean_data[i] * mean_data[i])
-        variance.append(v)
+        variance.append(math.sqrt(v))  # sqrt for perceptual scaling
 
-    # Normalize to 0..1
+    # Normalize both signals
+    max_edge = max(edge_mag) if edge_mag else 1.0
     max_var = max(variance) if variance else 1.0
-    if max_var < 1e-10:
+    if max_edge < 1e-6:
+        max_edge = 1.0
+    if max_var < 1e-6:
         max_var = 1.0
 
+    # Combine: 60% edge strength + 40% variance
     rough_bytes = bytearray(width * height)
-    for i, v in enumerate(variance):
-        # Map variance to roughness: sqrt gives a more perceptual scaling
-        normalized = math.sqrt(v / max_var)
-        # Remap: minimum roughness 0.2 (nothing is perfectly smooth),
-        # maximum 0.9 (leave room for truly rough materials)
-        rough = 0.2 + normalized * 0.7
+    for i in range(width * height):
+        e = edge_mag[i] / max_edge
+        v = variance[i] / max_var
+        combined = 0.6 * e + 0.4 * v
+        # Remap with floor and ceiling
+        rough = 0.15 + combined * 0.75
         rough_bytes[i] = max(0, min(255, int(rough * 255)))
 
     out = Image.frombytes("L", (width, height), bytes(rough_bytes))
-    # Light smoothing to reduce noise
-    out = out.filter(ImageFilter.GaussianBlur(radius=2))
+    # Moderate smoothing to clean up noise while preserving edges
+    out = out.filter(ImageFilter.GaussianBlur(radius=3))
     output_path = Path(output_path)
     out.save(output_path)
     return output_path

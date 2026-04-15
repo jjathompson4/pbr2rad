@@ -49,6 +49,9 @@ def _opts_from_request(req: ConvertOptionsRequest) -> ConvertOptions:
         varying_roughness=req.varying_roughness,
         rough_modulation=req.rough_modulation,
         estimate_maps=req.estimate_maps,
+        rotate_per_map=req.rotate_per_map or {},
+        flip_h=req.flip_h,
+        flip_v=req.flip_v,
     )
 
 
@@ -328,9 +331,45 @@ async def polyhaven_info(slug: str):
         if isinstance(channel_data, dict):
             resolutions.update(channel_data.keys())
 
+    # Build per-map previews. Map Poly Haven channel keys to our discover
+    # channel names so the frontend can pass rotations back under the same
+    # keys the conversion pipeline uses.
+    _PH_TO_INTERNAL = {
+        "Diffuse": "albedo",
+        "nor_gl": "normal_gl",
+        "nor_dx": "normal_dx",
+        "Rough": "roughness",
+        "Metal": "metalness",
+        "AO": "ao",
+        "Displacement": "displacement",
+        "arm": "arm",
+    }
+    # Prefer a low-res JPG for the UI thumbnail to keep the browser grid snappy.
+    PREVIEW_RES_ORDER = ("1k", "2k", "4k")
+    maps = []
+    for ph_key, internal in _PH_TO_INTERNAL.items():
+        ch = files.get(ph_key)
+        if not isinstance(ch, dict):
+            continue
+        thumb_url = None
+        for res in PREVIEW_RES_ORDER:
+            res_data = ch.get(res)
+            if not isinstance(res_data, dict):
+                continue
+            for fmt in ("jpg", "png"):
+                fmt_data = res_data.get(fmt)
+                if isinstance(fmt_data, dict) and fmt_data.get("url"):
+                    thumb_url = fmt_data["url"]
+                    break
+            if thumb_url:
+                break
+        if thumb_url:
+            maps.append({"channel": internal, "thumbnail_url": thumb_url})
+
     return {
         "slug": slug,
         "name": info.get("name", slug),
         "categories": info.get("categories", []),
         "resolutions": sorted(resolutions),
+        "maps": maps,
     }

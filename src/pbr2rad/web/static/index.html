@@ -45,6 +45,7 @@
         <div id="ph-detail" style="display:none;margin-top:0.75rem">
           <strong id="ph-detail-name"></strong>
           <div class="res-picker" id="ph-res-picker"></div>
+          <div id="ph-maps-grid" class="map-thumb-grid"></div>
           <button class="btn btn-primary" id="ph-convert-btn" style="margin-top:0.5rem">Fetch &amp; Convert</button>
         </div>
       </div>
@@ -133,6 +134,22 @@
     <div class="option-group">
       <label>Metalness Override (leave empty for auto)</label>
       <input type="number" id="opt-metalness" step="0.01" min="0" max="1" placeholder="auto">
+    </div>
+
+    <hr style="margin:0.75rem 0;border:none;border-top:1px solid #eee">
+
+    <p style="font-size:0.85em;color:#666;margin:0.25rem 0">
+      Rotate individual maps via the thumbnail grid next to each material.
+    </p>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="opt-flip-h">
+      <label for="opt-flip-h">Flip all horizontal</label>
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="opt-flip-v">
+      <label for="opt-flip-v">Flip all vertical</label>
     </div>
   </div>
 </main>

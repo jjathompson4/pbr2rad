@@ -46,15 +46,21 @@ def _read_channel_f(img: Image.Image, channel: int) -> list[float]:
 def write_dat_2d(path: Path, data: list[float], width: int, height: int) -> None:
     """Write a 2D Radiance ``.dat`` data file.
 
-    The file format is::
+    Radiance's convention for multi-dim data files is that the LAST declared
+    dimension varies fastest in the file. We declare dims as
+    ``(width, height)`` so that Radiance's first sample coordinate ``u``
+    indexes the X axis and the second ``v`` indexes the Y axis — matching
+    how ``colorpict`` samples the accompanying HDR (u=horizontal, v=vertical).
 
-        2
-        0 1 <width>
-        0 1 <height>
-        <data values, row-major>
+    To make the file layout match that declaration, we write COLUMN-major:
+    one file line per X column, each line containing ``height`` values (one
+    per Y row). If you accidentally write row-major with the same
+    declaration, Radiance will sample the .dat transposed 90° relative to
+    the HDR — visible as cross-hatching artifacts when a normal map pattern
+    overlays the matching albedo pattern.
 
-    ``data`` contains ``width * height`` float values in row-major order
-    (top-left to bottom-right, matching image scanline order).
+    ``data`` is the source image in PIL scanline order (row-major, top-left
+    origin): ``data[y * width + x]``.
     """
     if len(data) != width * height:
         raise ValueError(
@@ -68,12 +74,12 @@ def write_dat_2d(path: Path, data: list[float], width: int, height: int) -> None
         f"0\t1\t{height}",
     ]
 
-    # Write data in rows.  Values are rounded to 4 decimal places
-    # (sufficient for 8/16-bit source data) to keep file sizes compact
-    # while preserving precision for Radiance's bilinear interpolation.
-    for row in range(height):
-        row_vals = data[row * width : (row + 1) * width]
-        lines.append("\t".join(f"{v:.3f}" for v in row_vals))
+    # Write column-by-column: one line per X value, each line has H values.
+    # That makes the fast-varying axis in the file = Y (which matches the
+    # last-declared dim = height).
+    for x in range(width):
+        col_vals = (data[y * width + x] for y in range(height))
+        lines.append("\t".join(f"{v:.3f}" for v in col_vals))
 
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
 

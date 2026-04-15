@@ -54,17 +54,25 @@ class TestWriteDat2D:
             write_dat_2d(tmp_path / "bad.dat", [1.0, 2.0], 3, 3)
 
     def test_values_preserved(self, tmp_path):
+        """Data is laid out column-major: one line per X column, H values per
+        line. Source image (row-major PIL scanlines):
+            (0.1, 0.2, 0.3)    <- y=0
+            (0.4, 0.5, 0.6)    <- y=1
+        File output (3 columns, each a 2-entry Y slice):
+            col x=0: 0.1, 0.4
+            col x=1: 0.2, 0.5
+            col x=2: 0.3, 0.6
+        """
         dat_path = tmp_path / "vals.dat"
         data = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
         write_dat_2d(dat_path, data, 3, 2)
 
-        text = dat_path.read_text()
-        lines = text.strip().split("\n")
-        # Row 0: 0.100, 0.200, 0.300
-        row0 = [float(v) for v in lines[3].split()]
-        assert len(row0) == 3
-        assert abs(row0[0] - 0.1) < 1e-3
-        assert abs(row0[2] - 0.3) < 1e-3
+        lines = dat_path.read_text().strip().split("\n")
+        assert len(lines) == 3 + 3  # header(3) + 3 x-columns
+        col0 = [float(v) for v in lines[3].split()]
+        col2 = [float(v) for v in lines[5].split()]
+        assert col0 == pytest.approx([0.1, 0.4], abs=1e-3)
+        assert col2 == pytest.approx([0.3, 0.6], abs=1e-3)
 
     def test_compact_format(self, tmp_path):
         """Values are written with 3 decimal places, not full float precision."""
@@ -73,11 +81,10 @@ class TestWriteDat2D:
         write_dat_2d(dat_path, data, 2, 1)
         text = dat_path.read_text()
         lines = text.strip().split("\n")
-        row = lines[3]
-        # Each value should be like "0.502" not "0.501961"
-        vals = row.split("\t")
-        for v in vals:
-            assert len(v) <= 5, f"value {v!r} too long — should be compact"
+        # Column-major: 2 columns x 1 row → one value per line, 2 data lines.
+        for line in lines[3:]:
+            for v in line.split("\t"):
+                assert len(v) <= 5, f"value {v!r} too long — should be compact"
 
 
 # ---------------------------------------------------------------------------

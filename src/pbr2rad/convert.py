@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import cal as cal_mod
@@ -30,6 +30,16 @@ class ConvertOptions:
     rough_modulation: float = 0.8    # how strongly roughness affects specular
     estimate_maps: bool = True       # estimate missing normal/roughness from albedo
 
+    # Per-map rotation overrides (CCW degrees: 0, 90, 180, 270), keyed by
+    # discover channel name ("albedo", "normal_gl", "normal_dx", "roughness",
+    # "metalness", "ao", "displacement", "arm"). Maps without an entry keep
+    # their original orientation. Pixel-level rotation only — heavy rotations
+    # on normal maps may misalign lighting direction.
+    rotate_per_map: dict[str, int] = field(default_factory=dict)
+    # Global flip overrides, applied to all maps (escape hatch).
+    flip_h: bool = False
+    flip_v: bool = False
+
 
 @dataclass
 class ConvertResult:
@@ -44,6 +54,43 @@ class ConvertResult:
     roughness: float
     metalness: float
     primitive: str
+
+
+def _apply_orientation(
+    pbr: PBRSet,
+    out_dir: Path,
+    opts: ConvertOptions,
+) -> PBRSet:
+    """Write rotated/flipped copies of every source map to ``out_dir`` and
+    return a new ``PBRSet`` pointing at those copies. Original ``pbr.maps``
+    paths are left untouched."""
+    from PIL import Image
+
+    xform_dir = out_dir / "_oriented"
+    xform_dir.mkdir(exist_ok=True)
+
+    new_maps: dict[str, Path] = {}
+    for channel, src in pbr.maps.items():
+        rot = opts.rotate_per_map.get(channel, 0)
+        # No transforms for this map? Skip the re-encode and reuse the source.
+        if rot == 0 and not opts.flip_h and not opts.flip_v:
+            new_maps[channel] = src
+            continue
+        img = Image.open(src)
+        if opts.flip_h:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        if opts.flip_v:
+            img = img.transpose(Image.FLIP_TOP_BOTTOM)
+        if rot:
+            img = img.rotate(rot, expand=True)  # PIL rotate is CCW
+        dst = xform_dir / src.name
+        img.save(dst)
+        new_maps[channel] = dst
+
+    # Shallow copy with rewritten maps; keep name/root intact.
+    new_pbr = PBRSet(name=pbr.name, root=pbr.root)
+    new_pbr.maps = new_maps
+    return new_pbr
 
 
 def convert_set(
@@ -61,6 +108,11 @@ def convert_set(
 
     out_dir = Path(out_root) / pbr.name
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Apply per-map rotation + global flip overrides before any processing.
+    # Pixel-level only — does not remap normal-vector channel values.
+    if opts.rotate_per_map or opts.flip_h or opts.flip_v:
+        pbr = _apply_orientation(pbr, out_dir, opts)
 
     hdr_file = out_dir / f"{pbr.name}.hdr"
     cal_file = out_dir / f"{pbr.name}.cal"

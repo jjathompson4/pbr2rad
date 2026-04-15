@@ -25,6 +25,9 @@ class ConvertOptionsRequest(BaseModel):
     varying_roughness: bool = True
     rough_modulation: float = 0.8
     estimate_maps: bool = True
+    rotate_per_map: dict[str, int] = Field(default_factory=dict)
+    flip_h: bool = False
+    flip_v: bool = False
 
 
 class ChannelMap(BaseModel):

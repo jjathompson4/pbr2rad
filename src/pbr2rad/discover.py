@@ -12,18 +12,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Ordered list of (channel, keyword tokens).  First match wins; more specific
-# tokens are listed before more general ones (e.g. ``nor_gl`` before ``nor``).
+# Ordered list of (channel, keyword tokens). Tokens are matched against
+# underscore/dash/dot-separated FILENAME SEGMENTS, not as bare substrings —
+# otherwise an asset whose base name contains a channel word (e.g.
+# ``box_profile_metal_sheet_diff_1k``) has every file wrongly classified
+# as that channel. First match wins; more specific tokens listed first.
 _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
-    ("normal_gl", ("nor_gl", "normalgl", "normal_gl", "normal-ogl", "normal_opengl")),
-    ("normal_dx", ("nor_dx", "normaldx", "normal_dx", "normal-dx")),
-    ("normal", ("normal", "_nor_", "_nrm_", "_norm_")),
-    ("displacement", ("disp", "displacement", "height", "_bump_")),
+    ("normal_gl", ("norgl", "normalgl", "nor-gl", "normal-gl", "normal-ogl", "normalopengl")),
+    ("normal_dx", ("nordx", "normaldx", "nor-dx", "normal-dx")),
+    ("normal", ("normal", "nor", "nrm", "norm")),
+    ("displacement", ("disp", "displacement", "height", "bump")),
     ("roughness", ("rough", "roughness")),
     ("metalness", ("metal", "metallic", "metalness")),
-    ("ao", ("_ao_", "ambientocclusion", "occlusion")),
-    ("arm", ("_arm_",)),  # packed AO/Roughness/Metalness
-    ("albedo", ("diff", "albedo", "basecolor", "base_color", "_col_", "color", "diffuse")),
+    ("ao", ("ao", "ambientocclusion", "occlusion")),
+    ("arm", ("arm",)),  # packed AO/Roughness/Metalness
+    ("albedo", ("diff", "albedo", "basecolor", "col", "color", "diffuse")),
 ]
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".hdr", ".bmp"}
@@ -55,11 +58,44 @@ class PBRSet:
         return self.maps.get("normal_gl") or self.maps.get("normal") or self.maps.get("normal_dx")
 
 
+_RES_TAGS = ("1k", "2k", "4k", "8k", "16k")
+_EXT_TAGS = ("png", "jpg", "jpeg", "tif", "tiff", "exr", "hdr", "bmp")
+
+
+def _suffix_segments(filename: str) -> list[str]:
+    """Return the 1-3 filename segments that encode the channel.
+
+    Standard PBR naming is ``{basename}_{channel}_{resolution}.{ext}`` or
+    ``{basename}_{channel}.{ext}``. We trim the resolution/extension, then
+    take up to the last 2 segments of what remains — that's the specifier
+    (``diff``, ``nor_gl``, ``nor_dx``, ``ao``, …). Earlier segments are the
+    asset base name and must NOT be consulted for classification, because
+    they often contain channel-like words (e.g. ``box_profile_metal_sheet``
+    has ``metal`` in its name but is not a metal texture).
+    """
+    import re
+    parts = [s for s in re.split(r"[_\-. ]+", filename.lower()) if s]
+    # Drop trailing extension
+    while parts and parts[-1] in _EXT_TAGS:
+        parts.pop()
+    # Drop trailing resolution tag (may come with or without format suffix)
+    while parts and parts[-1] in _RES_TAGS:
+        parts.pop()
+    # Keep only the LAST up-to-2 segments (the channel specifier)
+    suffix = parts[-2:] if len(parts) >= 2 else parts[-1:] if parts else []
+    return suffix
+
+
 def _classify(filename: str) -> str | None:
-    lower = filename.lower()
+    suffix = _suffix_segments(filename)
+    # Build matchable tokens: each segment individually, plus the joined pair
+    # (so "nor_gl" → ["nor", "gl", "norgl"] all match).
+    matchable = set(suffix)
+    if len(suffix) == 2:
+        matchable.add(suffix[0] + suffix[1])
     for channel, tokens in _PATTERNS:
         for tok in tokens:
-            if tok in lower:
+            if tok in matchable:
                 return channel
     return None
 

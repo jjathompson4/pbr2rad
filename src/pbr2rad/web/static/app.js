@@ -177,7 +177,10 @@ async function selectPHItem(slug, name) {
   document.getElementById("ph-detail-name").textContent = name;
   detail.style.display = "block";
 
-  // Fetch resolutions
+  // Reset per-map rotation state whenever a new asset is selected.
+  phRotatePerMap = {};
+
+  // Fetch resolutions + per-map thumbnails
   try {
     const resp = await fetch(`/api/v1/polyhaven/${slug}/info`);
     const info = await resp.json();
@@ -194,8 +197,47 @@ async function selectPHItem(slug, name) {
       });
       picker.appendChild(btn);
     });
+    renderPHMapsGrid(info.maps || []);
   } catch (err) {
     // Fall back to default resolutions
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-map rotation thumbnails (Poly Haven panel)
+// ---------------------------------------------------------------------------
+let phRotatePerMap = {};
+
+function renderPHMapsGrid(maps) {
+  const grid = document.getElementById("ph-maps-grid");
+  grid.innerHTML = "";
+  // Stable display order; polyhaven may return them in any order.
+  const ORDER = ["albedo", "normal_gl", "normal_dx", "roughness", "metalness", "ao", "displacement"];
+  const sorted = maps.slice().sort(
+    (a, b) => ORDER.indexOf(a.channel) - ORDER.indexOf(b.channel)
+  );
+  for (const m of sorted) {
+    const tile = document.createElement("div");
+    tile.className = "map-thumb";
+    tile.dataset.channel = m.channel;
+    tile.dataset.rot = "0";
+    tile.innerHTML = `
+      <div class="map-thumb-img-wrap" title="Click to rotate 90° CCW">
+        <img class="map-thumb-img" src="${m.thumbnail_url}" alt="${m.channel}" loading="lazy">
+        <span class="map-thumb-rot-badge">0°</span>
+      </div>
+      <div class="map-thumb-label">${m.channel.replace("_", " ")}</div>
+    `;
+    tile.querySelector(".map-thumb-img-wrap").addEventListener("click", () => {
+      const cur = parseInt(tile.dataset.rot, 10) || 0;
+      const next = (cur + 90) % 360;
+      tile.dataset.rot = String(next);
+      tile.querySelector(".map-thumb-rot-badge").textContent = next + "°";
+      tile.querySelector(".map-thumb-img").style.transform = `rotate(-${next}deg)`;
+      if (next === 0) delete phRotatePerMap[m.channel];
+      else phRotatePerMap[m.channel] = next;
+    });
+    grid.appendChild(tile);
   }
 }
 
@@ -244,6 +286,9 @@ function getOptions() {
     normal: document.getElementById("opt-normal").checked,
     bump_scale: parseFloat(document.getElementById("opt-bump-scale").value) || 1,
     varying_roughness: document.getElementById("opt-varying-rough").checked,
+    rotate_per_map: { ...phRotatePerMap },
+    flip_h: document.getElementById("opt-flip-h").checked,
+    flip_v: document.getElementById("opt-flip-v").checked,
   };
 
   const roughVal = document.getElementById("opt-roughness").value;
