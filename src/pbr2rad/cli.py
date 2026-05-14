@@ -27,8 +27,13 @@ def _build_convert_parser(
     p.add_argument(
         "--projection",
         choices=("uv", "planar", "box", "cylindrical", "spherical"),
-        default="uv",
-        help="Projection mode. 'uv' uses mesh Lu/Lv (Radiance 6.0).",
+        default="box",
+        help=(
+            "Projection mode. 'box' (default) is triplanar and works on any "
+            "surface. 'uv' uses mesh Lu/Lv (Radiance 6.0), but obj2mesh "
+            "currently strips the pbr2rad material chain on import — see "
+            "README for details."
+        ),
     )
     p.add_argument(
         "--planar-axis",

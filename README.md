@@ -42,15 +42,15 @@ pbr2rad fetch cobblestone_01 -o /materials --resolution 4k --format png
 pbr2rad /materials/wood_floor -o /rad_materials
 
 # A parent folder containing many sets (each subfolder is one material):
-pbr2rad /materials -o /rad_materials --projection uv
+pbr2rad /materials -o /rad_materials
 
-# Native Radiance geometry without UVs — use a planar projection:
+# Irregular geometry / unknown orientations (default — triplanar):
+pbr2rad /materials/concrete -o /rad_materials --projection box --u-scale 0.5 --v-scale 0.5
+
+# Native Radiance geometry on a fixed axis pair:
 pbr2rad /materials/wood_floor -o /rad_materials \
     --projection planar --planar-axis xy \
     --u-scale 1.0 --v-scale 1.0
-
-# Irregular geometry (no UVs, multiple surface orientations):
-pbr2rad /materials/concrete -o /rad_materials --projection box --u-scale 0.5 --v-scale 0.5
 
 # Column or pipe geometry:
 pbr2rad /materials/brick -o /rad_materials --projection cylindrical --u-scale 2 --v-scale 2
@@ -78,16 +78,29 @@ pbr2rad /materials/stone -o /rad_materials --projection spherical --u-scale 1 --
 
 | Mode           | When to use                                                   |
 |----------------|---------------------------------------------------------------|
-| `uv`           | **Primary.** Any mesh with UVs (OBJ imported via `obj2mesh`). |
-| `planar`       | Native Radiance geometry on a known axis pair.                |
-| `box`          | Native geometry with irregular orientation (triplanar).       |
+| `box`          | **Primary.** Any geometry, any orientation (triplanar). Default. |
+| `planar`       | Native Radiance geometry aligned to one axis pair.            |
 | `cylindrical`  | Columns, pipes, cylinders (wraps around Z axis).              |
 | `spherical`    | Domes, globes, spheres (equirectangular mapping).             |
+| `uv`           | Experimental — requires a mesh-UV path that bypasses `obj2mesh` (see note). |
 
-`uv` emits a trivial `u = Lu; v = Lv;` passthrough. `planar` and `box` use
-`Px/Py/Pz` and the surface normal. `cylindrical` uses `atan2` around Z.
-`spherical` uses `atan2`/`asin` for equirectangular mapping. Tune all modes
-with `--u-scale` / `--v-scale` (world-unit tiles per texture).
+`box` uses `Px/Py/Pz` plus the surface normal to pick a projection plane
+per-hit; works on floors, walls, columns, anything. `planar` uses
+`Px/Py/Pz` on a fixed axis pair you choose (`xy`/`xz`/`yz`).
+`cylindrical` uses `atan2` around Z. `spherical` uses `atan2`/`asin` for
+equirectangular mapping. `uv` emits a trivial `u = Lu; v = Lv;`
+passthrough. Tune all modes with `--u-scale` / `--v-scale` (world-unit
+tiles per texture).
+
+**Why `box` is the default and `uv` is experimental:** in current Radiance
+(6.x), `obj2mesh` strips the textured material chain when building a
+`.rtm` from an OBJ — `colorpict` / `texdata` / `brightdata` modifiers
+silently fail to bind, so surfaces render as default grey. That breaks the
+intended `uv` workflow for OBJ → mesh imports. Until that's resolved
+upstream, drive pbr2rad with `box` projection (no mesh UVs needed) and
+emit raw Radiance polygons for the surfaces under test. The
+`scripts/render_office_inline.py` script in this repo demonstrates the
+working path against a real Rhino-exported office scene.
 
 ## Input
 
