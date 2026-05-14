@@ -108,6 +108,7 @@ def _make_response(
         resolution=[result.width, result.height],
         download_url=f"/api/v1/download/{job_id}",
         preview_url=f"/api/v1/preview/{job_id}" if has_preview else None,
+        channels_used=list(getattr(result, "channels_used", []) or []),
     )
 
 
@@ -280,17 +281,80 @@ async def preview(job_id: str):
 # Poly Haven proxy (avoids CORS)
 # ---------------------------------------------------------------------------
 
-@router.get("/polyhaven/search")
-async def polyhaven_search(q: str = ""):
-    """Search Poly Haven textures."""
+_CATALOG_CACHE: dict[str, object] = {"data": None, "fetched_at": 0.0}
+_CATALOG_TTL_SECONDS = 3600  # refresh hourly
+
+
+def _catalog_disk_path() -> Path:
+    from ..fetch import _cache_root
+    return _cache_root() / "catalog_textures.v1.json"
+
+
+def _polyhaven_catalog() -> dict:
+    """Two-tier cache for the Poly Haven texture catalog.
+
+    L1: in-process dict (zero I/O on hot path).
+    L2: JSON file on disk (survives process restarts; shared across workers).
+    Miss both: fetch from api.polyhaven.com, atomically write to L2,
+    populate L1.
+    """
+    import time
+    import os as _os
+    import tempfile
     import urllib.request
     import json as _json
 
+    now = time.time()
+
+    # L1: in-memory
+    if (
+        _CATALOG_CACHE["data"] is not None
+        and now - _CATALOG_CACHE["fetched_at"] < _CATALOG_TTL_SECONDS
+    ):
+        return _CATALOG_CACHE["data"]  # type: ignore[return-value]
+
+    # L2: disk file, if fresh enough
+    disk_path = _catalog_disk_path()
+    if disk_path.exists():
+        try:
+            mtime = disk_path.stat().st_mtime
+            if now - mtime < _CATALOG_TTL_SECONDS:
+                data = _json.loads(disk_path.read_text())
+                _CATALOG_CACHE["data"] = data
+                _CATALOG_CACHE["fetched_at"] = mtime
+                return data
+        except (OSError, ValueError):
+            pass  # corrupt or unreadable — fall through and refetch
+
+    # Miss: fetch from Poly Haven
     url = "https://api.polyhaven.com/assets?type=textures"
     req = urllib.request.Request(url, headers={"User-Agent": "pbr2rad/0.1"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = _json.loads(resp.read())
+
+    # Atomic write to disk (tempfile + os.replace — survives concurrent writes)
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            all_assets = _json.loads(resp.read())
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=str(disk_path.parent),
+            prefix=".catalog_", suffix=".tmp", delete=False,
+        ) as tmp:
+            _json.dump(data, tmp)
+            tmp_path = Path(tmp.name)
+        _os.replace(tmp_path, disk_path)
+    except OSError:
+        pass  # disk cache is best-effort
+
+    _CATALOG_CACHE["data"] = data
+    _CATALOG_CACHE["fetched_at"] = now
+    return data
+
+
+@router.get("/polyhaven/search")
+async def polyhaven_search(q: str = ""):
+    """Search Poly Haven textures (catalog cached for 1 hour)."""
+    try:
+        all_assets = _polyhaven_catalog()
     except Exception as exc:
         raise HTTPException(502, f"Poly Haven API error: {exc}")
 

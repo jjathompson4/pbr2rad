@@ -42,7 +42,7 @@ class ChannelMap(BaseModel):
 
 class PolyHavenConvertRequest(BaseModel):
     slug: str
-    resolution: Literal["1k", "2k", "4k", "8k"] = "2k"
+    resolution: Literal["1k", "2k", "4k", "8k"] = "1k"
     fmt: Literal["png", "jpg", "exr"] = "png"
     options: ConvertOptionsRequest = Field(default_factory=ConvertOptionsRequest)
 
@@ -72,6 +72,10 @@ class ConvertResponse(BaseModel):
     resolution: list[int]
     download_url: str
     preview_url: str | None = None
+    # PBR channels actually consumed during conversion (subset of:
+    # "albedo", "normal", "roughness", "metalness"). The UI uses this
+    # to indicate which input maps fed the Radiance material.
+    channels_used: list[str] = []
 
 
 class HealthResponse(BaseModel):

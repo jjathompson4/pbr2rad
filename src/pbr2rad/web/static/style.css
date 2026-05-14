@@ -20,16 +20,41 @@ header h1 { font-size: 1.2rem; font-weight: 600; }
 header span { font-size: 0.85rem; color: #999; }
 
 main {
-  max-width: 1100px;
-  margin: 1.5rem auto;
-  padding: 0 1rem;
+  /* Three-column viewport-fit: options | source | output.
+     Each panel scrolls internally so the page itself never scrolls. */
+  margin: 0;
+  padding: 1rem 1.25rem;
   display: grid;
-  grid-template-columns: 1fr 280px;
-  gap: 1.5rem;
+  grid-template-columns: 260px minmax(320px, 1fr) minmax(280px, 1fr);
+  gap: 1rem;
+  height: calc(100vh - 64px - 44px - 2rem); /* 100vh minus header, footer, vertical padding */
+  align-items: stretch;
+}
+
+/* Each direct grid child becomes a flex column taking its column's full
+   height. Internal scroll only kicks in if content genuinely exceeds the
+   panel — typical case is no scroll at all. */
+main > .panel {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Below this viewport width, drop the output panel to its own row.
+   Below the next breakpoint, collapse to a single column. */
+@media (max-width: 1100px) {
+  main {
+    grid-template-columns: 260px 1fr;
+    grid-template-rows: 1fr auto;
+    height: auto;
+  }
+  #output-panel { grid-column: 1 / -1; }
 }
 
 @media (max-width: 768px) {
-  main { grid-template-columns: 1fr; }
+  main { grid-template-columns: 1fr; height: auto; }
 }
 
 /* Panels */
@@ -37,8 +62,43 @@ main {
   background: #fff;
   border: 1px solid #ddd;
   border-radius: 6px;
-  padding: 1.25rem;
+  padding: 1rem 1.1rem;
 }
+
+/* Settings mode toggle — two pill buttons */
+.settings-mode {
+  display: flex;
+  gap: 0;
+  margin-bottom: 0.85rem;
+}
+.mode-btn {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  background: #f6f6f6;
+  color: #555;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+.mode-btn:first-child { border-radius: 4px 0 0 4px; }
+.mode-btn:last-child  { border-radius: 0 4px 4px 0; border-left: none; }
+.mode-btn:hover { background: #eee; }
+.mode-btn.active {
+  background: #2a2a2a;
+  color: #fff;
+  border-color: #2a2a2a;
+}
+
+/* When Advanced is on, slim down the spacing so the whole panel fits in
+   the card without scrolling. */
+#advanced-options .option-group { margin-bottom: 0.5rem; }
+#advanced-options .option-group label { margin-bottom: 0.15rem; font-size: 0.75rem; }
+#advanced-options .option-group select,
+#advanced-options .option-group input { padding: 0.28rem 0.35rem; font-size: 0.8rem; }
+#advanced-options .checkbox-row { margin-bottom: 0.3rem; font-size: 0.82rem; }
+#advanced-options hr { margin: 0.5rem 0 !important; }
+#advanced-options p { margin: 0.25rem 0 !important; font-size: 0.75rem !important; }
 
 .panel h2 {
   font-size: 0.95rem;
@@ -49,33 +109,43 @@ main {
   letter-spacing: 0.5px;
 }
 
-/* Tabs */
+/* Tabs — styled as a pill-button group to match the Settings mode toggle. */
 .tabs {
   display: flex;
   gap: 0;
-  margin-bottom: 1rem;
-  border-bottom: 2px solid #eee;
+  margin-bottom: 0.85rem;
+  border-bottom: none;
 }
 
 .tab-btn {
-  padding: 0.5rem 1rem;
-  border: none;
-  background: none;
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ddd;
+  background: #f6f6f6;
+  color: #555;
   cursor: pointer;
-  font-size: 0.9rem;
-  color: #888;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
+  font-size: 0.82rem;
+  font-weight: 500;
 }
+.tab-btn:first-child { border-radius: 4px 0 0 4px; }
+.tab-btn:last-child  { border-radius: 0 4px 4px 0; border-left: none; }
+.tab-btn:hover { background: #eee; }
 
 .tab-btn.active {
-  color: #333;
-  border-bottom-color: #2a2a2a;
-  font-weight: 600;
+  background: #2a2a2a;
+  color: #fff;
+  border-color: #2a2a2a;
+  font-weight: 500;
 }
 
 .tab-content { display: none; }
-.tab-content.active { display: block; }
+/* Active tab fills the remaining card height so its grid can stretch. */
+.tab-content.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 
 /* Drop zone */
 .dropzone {
@@ -126,7 +196,18 @@ main {
 
 /* Poly Haven grid */
 .ph-search { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 0.75rem; }
-.ph-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.5rem; max-height: 300px; overflow-y: auto; }
+/* Asset grid fills remaining card height; scrolls internally if needed.
+   When a Poly Haven asset is selected, the detail block below shrinks the
+   grid via flex layout — no fixed max-height cutoff. */
+.ph-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 0.4rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
 .ph-item { cursor: pointer; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
 .ph-item.selected { border-color: #333; }
 .ph-item img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
@@ -164,9 +245,24 @@ main {
 .status.error { color: #c62828; }
 .status.success { color: #2e7d32; }
 
-.result-summary { font-size: 0.85rem; margin-bottom: 0.75rem; }
-.result-summary dt { font-weight: 600; color: #666; }
-.result-summary dd { margin-bottom: 0.4rem; }
+/* Compact two-column summary so it fits in the output card without scrolling. */
+.result-summary {
+  font-size: 0.78rem;
+  margin-bottom: 0.6rem;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.6rem;
+  row-gap: 0.2rem;
+  align-items: baseline;
+}
+.result-summary dt {
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+}
+.result-summary dd { margin: 0; }
 
 .color-swatch {
   display: inline-block;
@@ -178,10 +274,18 @@ main {
   margin-right: 0.3rem;
 }
 
+/* Preview image grows to fill the remaining card height. The output panel
+   is a flex column, so flex:1 here pushes the summary + Download button
+   to the bottom of the card — mirroring the position of Fetch & Convert
+   in the middle card. */
 .preview-img {
   width: 100%;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  object-fit: contain;
   border-radius: 4px;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.6rem;
   display: none;
 }
 
@@ -249,6 +353,31 @@ main {
 .map-thumb[data-rot="90"] .map-thumb-rot-badge,
 .map-thumb[data-rot="180"] .map-thumb-rot-badge,
 .map-thumb[data-rot="270"] .map-thumb-rot-badge { opacity: 1; }
+
+/* USED / IGNORED indicator (bottom-left of each map thumbnail) */
+.map-thumb-usage-badge {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  font-size: 0.65em;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+}
+.map-thumb[data-used="true"] .map-thumb-usage-badge {
+  background: rgba(46, 125, 50, 0.85);
+  color: #fff;
+}
+.map-thumb[data-used="false"] .map-thumb-usage-badge {
+  background: rgba(0, 0, 0, 0.55);
+  color: #ccc;
+}
+/* Dim the whole tile when the map will not be consumed. */
+.map-thumb[data-used="false"] .map-thumb-img { opacity: 0.45; filter: grayscale(0.5); }
+.map-thumb[data-used="false"] .map-thumb-label { color: #999; font-style: italic; }
+
 .map-thumb-label {
   margin-top: 0.25rem;
   color: #555;

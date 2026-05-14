@@ -255,7 +255,7 @@ class TestFetchCLI:
         parser = _build_fetch_parser()
         args = parser.parse_args(["wood_floor_03", "-o", "/tmp/out"])
         assert args.slug == "wood_floor_03"
-        assert args.resolution == "2k"
+        assert args.resolution == "1k"
         assert args.fmt == "png"
         assert args.output == Path("/tmp/out")
 

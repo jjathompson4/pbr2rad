@@ -54,6 +54,11 @@ class ConvertResult:
     roughness: float
     metalness: float
     primitive: str
+    # Source-PBR channels that actually fed the Radiance material
+    # ("albedo", "normal", "roughness", "metalness"). Anything in the input
+    # set but not in this list was ignored (e.g. ao, displacement, or maps
+    # disabled via options).
+    channels_used: list[str] = field(default_factory=list)
 
 
 def _apply_orientation(
@@ -118,9 +123,12 @@ def convert_set(
     cal_file = out_dir / f"{pbr.name}.cal"
     rad_file = out_dir / f"{pbr.name}.rad"
 
+    channels_used: list[str] = []
+
     # 1. Albedo → Radiance HDR
     width, height = hdr_mod.convert_ldr_to_hdr(pbr.albedo, hdr_file, srgb=True)
     avg_rgb = hdr_mod.average_rgb(pbr.albedo, srgb=True)
+    channels_used.append("albedo")
 
     # 2. Projection .cal
     cal_text = cal_mod.generate(
@@ -149,6 +157,10 @@ def convert_set(
         roughness = opts.roughness_override
     elif pbr.roughness is not None:
         roughness = hdr_mod.average_gray(pbr.roughness)
+        # Mark roughness as used (for the scalar average). The varying-
+        # roughness path below may also use it — channels_used is a set
+        # semantically, so we de-duplicate at the end.
+        channels_used.append("roughness")
     else:
         roughness = 0.5
 
@@ -156,6 +168,7 @@ def convert_set(
         metalness = opts.metalness_override
     elif pbr.metalness is not None:
         metalness = hdr_mod.average_gray(pbr.metalness)
+        channels_used.append("metalness")
     else:
         metalness = 0.0
 
@@ -164,6 +177,7 @@ def convert_set(
     if opts.normal and pbr.normal is not None:
         convention = normal_mod.detect_convention(pbr.maps)
         is_dx = convention == "dx"
+        channels_used.append("normal")
 
         dat_r, dat_g, dat_b, _nw, _nh = normal_mod.convert_normal_to_dat(
             pbr.normal, out_dir, pbr.name,
@@ -188,6 +202,8 @@ def convert_set(
     # 5. Spatially varying roughness (optional)
     rough_kwargs: dict = {}
     if opts.varying_roughness and pbr.roughness is not None:
+        # Roughness already in channels_used from the scalar-average step;
+        # the varying-roughness path consumes the same source map.
         rough_dat, _rw, _rh = normal_mod.convert_roughness_to_dat(
             pbr.roughness, out_dir, pbr.name,
         )
@@ -213,6 +229,10 @@ def convert_set(
     )
     rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
 
+    # De-duplicate channels_used while preserving insertion order.
+    seen: set[str] = set()
+    channels_used = [c for c in channels_used if not (c in seen or seen.add(c))]
+
     return ConvertResult(
         name=pbr.name,
         out_dir=out_dir,
@@ -225,6 +245,7 @@ def convert_set(
         roughness=roughness,
         metalness=metalness,
         primitive=mat.as_primitive(),
+        channels_used=channels_used,
     )
 
 

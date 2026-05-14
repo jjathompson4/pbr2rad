@@ -10,12 +10,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 _BASE_URL = "https://api.polyhaven.com"
 _USER_AGENT = "pbr2rad/0.1"
+
+
+def _cache_root() -> Path:
+    """Return the on-disk cache directory for downloaded Poly Haven files.
+
+    Overridable via $PBR2RAD_CACHE_DIR. Default: ~/.cache/pbr2rad
+    """
+    override = os.environ.get("PBR2RAD_CACHE_DIR")
+    base = Path(override) if override else Path.home() / ".cache" / "pbr2rad"
+    return base / "polyhaven"
+
+
+def _cached_path(slug: str, resolution: str, fmt: str, filename: str) -> Path:
+    return _cache_root() / slug / resolution / fmt / filename
+
+
+def _file_md5(path: Path) -> str:
+    h = hashlib.md5()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class FetchError(Exception):
@@ -52,7 +76,7 @@ def fetch_asset_files(slug: str) -> dict:
 
 def _pick_files(
     files: dict,
-    resolution: str = "2k",
+    resolution: str = "1k",
     fmt: str = "png",
 ) -> list[tuple[str, str, str | None, int]]:
     """Select download URLs for each available channel at the given resolution.
@@ -98,8 +122,23 @@ def _download_file(
     expected_md5: str | None = None,
     *,
     verbose: bool = False,
+    cache: Path | None = None,
 ) -> None:
-    """Download a single file, optionally verifying its MD5 checksum."""
+    """Download a file, with optional on-disk cache and MD5 verification.
+
+    If ``cache`` is given and already contains a valid copy (matching md5
+    when provided), we hardlink/copy it into ``dest`` instead of re-fetching.
+    Otherwise we download, validate, save into the cache, and place at dest.
+    """
+    if cache is not None and cache.exists():
+        if expected_md5 is None or _file_md5(cache) == expected_md5:
+            _place_from_cache(cache, dest)
+            if verbose:
+                size_mb = cache.stat().st_size / (1024 * 1024)
+                print(f"  cache hit: {dest.name} ({size_mb:.1f} MB)")
+            return
+        # md5 mismatch — fall through and re-download
+
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = resp.read()
@@ -112,17 +151,34 @@ def _download_file(
                 f"expected {expected_md5}, got {actual}"
             )
 
-    dest.write_bytes(data)
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(data)
+        _place_from_cache(cache, dest)
+    else:
+        dest.write_bytes(data)
+
     if verbose:
         size_mb = len(data) / (1024 * 1024)
         print(f"  downloaded: {dest.name} ({size_mb:.1f} MB)")
+
+
+def _place_from_cache(cache: Path, dest: Path) -> None:
+    """Materialize a cached file at dest (hardlink if same filesystem, else copy)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    try:
+        os.link(cache, dest)
+    except OSError:
+        shutil.copy2(cache, dest)
 
 
 def download_texture_set(
     slug: str,
     output_dir: Path,
     *,
-    resolution: str = "2k",
+    resolution: str = "1k",
     fmt: str = "png",
     verbose: bool = False,
 ) -> Path:
@@ -161,7 +217,8 @@ def download_texture_set(
         # Derive a filename from the URL
         url_filename = url.rsplit("/", 1)[-1]
         dest = mat_dir / url_filename
-        _download_file(url, dest, md5, verbose=verbose)
+        cache = _cached_path(slug, resolution, fmt, url_filename)
+        _download_file(url, dest, md5, verbose=verbose, cache=cache)
 
     if verbose:
         print(f"  saved to: {mat_dir}")

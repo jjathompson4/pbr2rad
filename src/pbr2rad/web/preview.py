@@ -34,17 +34,16 @@ def render_preview(
     work = output_png.parent
     name = rad_file.stem
 
-    # Scene: shader-ball sphere with three-point studio lighting + sky dome.
-    # The dome (cool, broad) acts as a fake HDRI environment for ambient bounce;
-    # key/fill/rim sources give crisp shading and edge definition.
+    # Scene: a unit sphere with the material under test, lit by three-point
+    # studio lighting + sky dome. The sphere's continuously varying normal
+    # reveals how the box/triplanar .cal switches between projection axes
+    # (visible as three soft "seams" along the world-axis great circles).
     scene_rad = work / "preview_scene.rad"
-    scene_rad.write_text(
-        # Material on a flat 2x2 plane laid on the XY axis at z=0.
-        # Matches Polyhaven's primary preview format and avoids spherical-UV
-        # moire artifacts you get when projecting tile patterns onto a sphere.
-        f"{name} polygon plate\n0\n0\n12\n"
-        "  -1 -1 0\n   1 -1 0\n   1  1 0\n  -1  1 0\n\n"
 
+    sphere_geom = f"{name} sphere ball\n0\n0\n4 0 0 0 1\n\n"
+
+    scene_rad.write_text(
+        sphere_geom +
         # Key light (warm, upper-front-left) - main shading source
         "void light key_l\n0\n0\n3 5.0 4.5 4.0\n\n"
         "key_l source key\n0\n0\n4 -0.6 -0.6 0.8 8\n\n"
@@ -81,12 +80,13 @@ def render_preview(
             subprocess.run(
                 [
                     "rpict",
-                    # Slightly elevated front view of the tilted plane,
-                    # roughly matching Polyhaven's preview camera angle.
-                    "-vp", "0", "-1.6", "1.1",
-                    "-vd", "0", "0.85", "-0.55",
+                    # 3/4 view aimed exactly at the origin. Camera distance
+                    # and FOV tuned so the cube fills ~80% of the frame with
+                    # all three visible faces clearly readable.
+                    "-vp", "2.6", "-2.9", "2.1",
+                    "-vd", "-0.584", "0.652", "-0.472",
                     "-vu", "0", "0", "1",
-                    "-vh", "35", "-vv", "35",
+                    "-vh", "42", "-vv", "42",
                     "-x", str(size), "-y", str(size),
                     "-ab", "3",          # ambient bounces
                     "-aa", "0.05",       # ambient accuracy (tighter)
@@ -103,7 +103,7 @@ def render_preview(
         filtered = work / "preview_filt.hdr"
         bmp = work / "preview.bmp"
         subprocess.run(
-            ["pfilt", "-1", "-e", "+2.2", str(hdr)],
+            ["pfilt", "-1", "-e", "+1.4", str(hdr)],
             stdout=open(filtered, "wb"), stderr=subprocess.PIPE,
             check=True, timeout=30, env=env,
         )

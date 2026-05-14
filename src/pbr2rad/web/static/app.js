@@ -8,7 +8,7 @@ const CHANNELS = [
 
 let uploadedFiles = [];
 let selectedPHSlug = null;
-let selectedPHRes = "2k";
+let selectedPHRes = "1k";
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -20,6 +20,29 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+  });
+});
+
+// On first load, populate the Poly Haven grid with the first page of the
+// catalog (empty-string search returns the cached first 30) so the user
+// sees something instead of a blank panel.
+window.addEventListener("DOMContentLoaded", () => {
+  searchPolyHaven("");
+});
+
+// Settings-mode toggle: Default keeps the advanced panel hidden (and the
+// defaults apply); Advanced reveals it. The toggle is purely UI — values
+// in the advanced panel stay at their defaults until the user changes them.
+document.querySelectorAll(".mode-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn").forEach(b => {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
+    btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
+    const showAdvanced = btn.dataset.mode === "advanced";
+    document.getElementById("advanced-options").hidden = !showAdvanced;
   });
 });
 
@@ -225,6 +248,7 @@ function renderPHMapsGrid(maps) {
       <div class="map-thumb-img-wrap" title="Click to rotate 90° CCW">
         <img class="map-thumb-img" src="${m.thumbnail_url}" alt="${m.channel}" loading="lazy">
         <span class="map-thumb-rot-badge">0°</span>
+        <span class="map-thumb-usage-badge"></span>
       </div>
       <div class="map-thumb-label">${m.channel.replace("_", " ")}</div>
     `;
@@ -239,7 +263,36 @@ function renderPHMapsGrid(maps) {
     });
     grid.appendChild(tile);
   }
+  updateMapUsage();
 }
+
+// Compute which channels the conversion will consume given the current
+// option toggles, then mark each tile in the maps grid as used/ignored.
+// Channels currently consumed by pbr2rad:
+//   albedo     - always (required)
+//   roughness  - whenever a roughness map is present (used as scalar mean
+//                AND for varying-roughness if that option is on)
+//   metalness  - whenever a metalness map is present
+//   normal_gl/normal_dx - whenever the "Use normal map" option is on and
+//                a normal map is present
+//   ao, displacement - currently unused by the conversion
+function updateMapUsage() {
+  const useNormal = document.getElementById("opt-normal").checked;
+  document.querySelectorAll(".map-thumb").forEach(tile => {
+    const ch = tile.dataset.channel;
+    let used = false;
+    if (ch === "albedo") used = true;
+    else if (ch === "roughness") used = true;
+    else if (ch === "metalness") used = true;
+    else if (ch === "normal_gl" || ch === "normal_dx") used = useNormal;
+    tile.dataset.used = used ? "true" : "false";
+    const badge = tile.querySelector(".map-thumb-usage-badge");
+    if (badge) badge.textContent = used ? "USED" : "IGNORED";
+  });
+}
+
+// Recompute usage when relevant options toggle.
+document.getElementById("opt-normal").addEventListener("change", updateMapUsage);
 
 document.getElementById("ph-convert-btn").addEventListener("click", async () => {
   if (!selectedPHSlug) return;

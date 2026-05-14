@@ -95,6 +95,11 @@ def convert_normal_to_dat(
     where ``*_dat_name`` is the bare filename (no directory).
     """
     img = Image.open(src)
+    # Flip vertically so DAT sample v=0 corresponds to the BOTTOM of the
+    # source image — matching Radiance's bottom-origin picture coordinates
+    # used by colorpict on the albedo HDR. Without this the normal-map
+    # bumps land vertically inverted from the albedo pattern they describe.
+    img = img.transpose(Image.FLIP_TOP_BOTTOM)
     width, height = img.size
 
     # Extract R, G, B channels as 0..1 floats
@@ -188,6 +193,9 @@ def convert_roughness_to_dat(
     Returns ``(dat_name, width, height)``.
     """
     img = Image.open(src)
+    # Vertical flip — see convert_normal_to_dat for rationale (DAT bottom-origin
+    # alignment with the albedo HDR via colorpict).
+    img = img.transpose(Image.FLIP_TOP_BOTTOM)
     width, height = img.size
 
     # Read as grayscale 0..1

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>pbr2rad</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
 
@@ -14,56 +14,18 @@
 </header>
 
 <main>
-  <!-- Left: Source + Output -->
-  <div>
-    <!-- Source panel -->
-    <div class="panel" style="margin-bottom:1.5rem">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="upload">Upload Files</button>
-        <button class="tab-btn" data-tab="polyhaven">Poly Haven</button>
-      </div>
+  <!-- Left: Settings -->
+  <div class="panel" id="settings-panel">
+    <h2>Settings</h2>
 
-      <!-- Upload tab -->
-      <div id="tab-upload" class="tab-content active">
-        <div class="dropzone" id="dropzone">
-          <p>Drop PBR texture files here</p>
-          <small>or click to browse (PNG, JPG, TIFF, EXR)</small>
-          <input type="file" id="file-input" multiple accept="image/*" style="display:none">
-        </div>
-        <table class="channel-table" id="channel-table" style="display:none">
-          <thead><tr><th>File</th><th>Channel</th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <input type="text" id="material-name" placeholder="Material name (optional)" style="width:100%;padding:0.35rem;border:1px solid #ddd;border-radius:3px;margin-top:0.75rem;font-size:0.85rem">
-        <button class="btn btn-primary" id="convert-btn" disabled>Convert</button>
-      </div>
-
-      <!-- Poly Haven tab -->
-      <div id="tab-polyhaven" class="tab-content">
-        <input type="text" class="ph-search" id="ph-search" placeholder="Search Poly Haven textures...">
-        <div class="ph-grid" id="ph-grid"></div>
-        <div id="ph-detail" style="display:none;margin-top:0.75rem">
-          <strong id="ph-detail-name"></strong>
-          <div class="res-picker" id="ph-res-picker"></div>
-          <div id="ph-maps-grid" class="map-thumb-grid"></div>
-          <button class="btn btn-primary" id="ph-convert-btn" style="margin-top:0.5rem">Fetch &amp; Convert</button>
-        </div>
-      </div>
+    <div class="settings-mode" role="tablist" aria-label="Settings mode">
+      <button class="mode-btn active" data-mode="default"
+              type="button" role="tab" aria-selected="true">Default</button>
+      <button class="mode-btn" data-mode="advanced"
+              type="button" role="tab" aria-selected="false">Advanced</button>
     </div>
 
-    <!-- Output panel -->
-    <div class="panel" id="output-panel">
-      <h2>Output</h2>
-      <div class="status" id="status">Ready</div>
-      <img class="preview-img" id="preview-img" alt="Preview render">
-      <dl class="result-summary" id="result-summary" style="display:none"></dl>
-      <a class="btn btn-download" id="download-btn" style="display:none;text-align:center;text-decoration:none">Download .zip</a>
-    </div>
-  </div>
-
-  <!-- Right: Options -->
-  <div class="panel">
-    <h2>Options</h2>
+    <div id="advanced-options" hidden>
 
     <div class="option-group">
       <label>Projection</label>
@@ -151,9 +113,63 @@
       <input type="checkbox" id="opt-flip-v">
       <label for="opt-flip-v">Flip all vertical</label>
     </div>
+
+    </div><!-- /#advanced-options -->
+  </div>
+
+  <!-- Middle: Source -->
+  <div class="panel">
+    <h2>Reference Material</h2>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="polyhaven">Poly Haven</button>
+      <button class="tab-btn" data-tab="upload">Upload Files</button>
+    </div>
+
+    <!-- Upload tab -->
+    <div id="tab-upload" class="tab-content">
+      <div class="dropzone" id="dropzone">
+        <p>Drop PBR texture files here</p>
+        <small>or click to browse (PNG, JPG, TIFF, EXR)</small>
+        <input type="file" id="file-input" multiple accept="image/*" style="display:none">
+      </div>
+      <table class="channel-table" id="channel-table" style="display:none">
+        <thead><tr><th>File</th><th>Channel</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <input type="text" id="material-name" placeholder="Material name (optional)" style="width:100%;padding:0.35rem;border:1px solid #ddd;border-radius:3px;margin-top:0.75rem;font-size:0.85rem">
+      <button class="btn btn-primary" id="convert-btn" disabled>Convert</button>
+    </div>
+
+    <!-- Poly Haven tab -->
+    <div id="tab-polyhaven" class="tab-content active">
+      <input type="text" class="ph-search" id="ph-search" placeholder="Search Poly Haven textures...">
+      <div class="ph-grid" id="ph-grid"></div>
+      <div id="ph-detail" style="display:none;margin-top:0.75rem">
+        <strong id="ph-detail-name"></strong>
+        <div class="res-picker" id="ph-res-picker"></div>
+        <div id="ph-maps-grid" class="map-thumb-grid"></div>
+        <button class="btn btn-primary" id="ph-convert-btn" style="margin-top:0.5rem">Fetch &amp; Convert</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Output -->
+  <div class="panel" id="output-panel">
+    <h2>Output</h2>
+    <div class="status" id="status">Ready</div>
+    <img class="preview-img" id="preview-img" alt="Preview render">
+    <dl class="result-summary" id="result-summary" style="display:none"></dl>
+    <a class="btn btn-download" id="download-btn" style="display:none;text-align:center;text-decoration:none">Download .zip</a>
   </div>
 </main>
 
-<script src="/static/app.js"></script>
+<footer style="text-align:center;padding:0.75rem;font-size:0.8em;color:#666;border-top:1px solid #eee;margin-top:1rem">
+  Textures provided by
+  <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>
+  under CC0. If you find them useful, consider
+  <a href="https://www.patreon.com/polyhaven" target="_blank" rel="noopener">supporting them on Patreon</a>.
+</footer>
+
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>
