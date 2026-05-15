@@ -62,13 +62,20 @@ def _rad_roughness(perceptual: float) -> float:
     return round(r * r, 4)
 
 
+def default_specularity(metalness: float) -> float:
+    """Default specular reflectance for the plastic/metal primitive.
+
+    Plastic uses 0.05 as a neutral dielectric F0 added on top of the
+    diffuse pattern. Metal uses 1.0 because the pattern colour itself is
+    the specular reflectance.
+    """
+    return 1.0 if metalness >= 0.5 else 0.05
+
+
 def _rad_specularity(params: MaterialParams) -> float:
     if params.specularity is not None:
         return params.specularity
-    # Radiance ``metal`` uses the pattern colour as specular reflectance, so
-    # the specularity argument is 1.  ``plastic`` uses a scalar specular on
-    # top of the diffuse pattern — 0.05 is a good neutral dielectric F0.
-    return 1.0 if params.metalness >= 0.5 else 0.05
+    return default_specularity(params.metalness)
 
 
 def generate(params: MaterialParams) -> str:

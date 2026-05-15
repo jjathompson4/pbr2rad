@@ -219,12 +219,16 @@ def convert_ldr_to_hdr(
     *,
     srgb: bool = True,
     rle: bool = True,
+    scale: float = 1.0,
 ) -> tuple[int, int]:
     """Convert an LDR image (PNG/JPG/TIFF) to Radiance HDR.
 
     ``srgb`` decodes sRGB-encoded input to linear light; set False for data
     maps (roughness, normal) if they are ever passed through this path.
     ``rle`` enables adaptive RLE compression (default True).
+    ``scale`` is a uniform multiplier applied after the gamma decode —
+    used by the converter to reserve headroom for a constant specular
+    term (see ``convert.convert_set``).
     Returns ``(width, height)``.
     """
     img = Image.open(src).convert("RGB")
@@ -235,9 +239,11 @@ def convert_ldr_to_hdr(
     lut = _SRGB_LUT_F
     if srgb:
         for i in range(0, len(data), 3):
-            pixels.append((lut[data[i]], lut[data[i + 1]], lut[data[i + 2]]))
+            pixels.append(
+                (lut[data[i]] * scale, lut[data[i + 1]] * scale, lut[data[i + 2]] * scale)
+            )
     else:
-        inv = 1.0 / 255.0
+        inv = scale / 255.0
         for i in range(0, len(data), 3):
             pixels.append((data[i] * inv, data[i + 1] * inv, data[i + 2] * inv))
 

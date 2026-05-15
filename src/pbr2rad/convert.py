@@ -125,12 +125,33 @@ def convert_set(
 
     channels_used: list[str] = []
 
-    # 1. Albedo → Radiance HDR
-    width, height = hdr_mod.convert_ldr_to_hdr(pbr.albedo, hdr_file, srgb=True)
+    # 1. Metalness picks plastic vs metal; both drive the specular term we
+    #    must reserve texture headroom for, so determine it first.
+    if opts.metalness_override is not None:
+        metalness = opts.metalness_override
+    elif pbr.metalness is not None:
+        metalness = hdr_mod.average_gray(pbr.metalness)
+        channels_used.append("metalness")
+    else:
+        metalness = 0.0
+
+    # Reserve headroom for the specular term to guarantee energy
+    # conservation at every texel — see pbr2rad-audit/audit_summary.md.
+    # Plastic adds a constant spec on top of the diffuse pattern, so we
+    # pre-scale the .hdr by (1 - spec) and keep R=G=B=1 in the .rad.
+    # Metal uses the pattern colour itself as the specular reflectance
+    # (no additive term), so no scaling is needed.
+    spec = rad_mod.default_specularity(metalness)
+    albedo_scale = 1.0 if metalness >= 0.5 else (1.0 - spec)
+
+    # 2. Albedo → Radiance HDR
+    width, height = hdr_mod.convert_ldr_to_hdr(
+        pbr.albedo, hdr_file, srgb=True, scale=albedo_scale,
+    )
     avg_rgb = hdr_mod.average_rgb(pbr.albedo, srgb=True)
     channels_used.append("albedo")
 
-    # 2. Projection .cal
+    # 3. Projection .cal
     cal_text = cal_mod.generate(
         opts.projection,
         axis=opts.planar_axis,  # type: ignore[arg-type]
@@ -141,7 +162,7 @@ def convert_set(
     )
     cal_file.write_text(cal_text, encoding="ascii")
 
-    # 2b. Estimate missing maps from albedo (if enabled)
+    # 3b. Estimate missing maps from albedo (if enabled)
     if opts.estimate_maps:
         if pbr.normal is None and opts.normal:
             est_normal = out_dir / f"{pbr.name}_est_nor_gl.png"
@@ -163,14 +184,6 @@ def convert_set(
         channels_used.append("roughness")
     else:
         roughness = 0.5
-
-    if opts.metalness_override is not None:
-        metalness = opts.metalness_override
-    elif pbr.metalness is not None:
-        metalness = hdr_mod.average_gray(pbr.metalness)
-        channels_used.append("metalness")
-    else:
-        metalness = 0.0
 
     # 4. Normal map (optional)
     normal_kwargs: dict = {}
