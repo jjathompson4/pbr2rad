@@ -406,24 +406,41 @@ def _polyhaven_catalog() -> dict:
     ):
         return _CATALOG_CACHE["data"]  # type: ignore[return-value]
 
-    # L2: disk file, if fresh enough
+    # L2: disk file. Read it regardless of age so we can fall back to a stale
+    # copy if the live fetch fails below.
     disk_path = _catalog_disk_path()
+    disk_data = None
+    disk_mtime = 0.0
     if disk_path.exists():
         try:
-            mtime = disk_path.stat().st_mtime
-            if now - mtime < _CATALOG_TTL_SECONDS:
-                data = _json.loads(disk_path.read_text())
-                _CATALOG_CACHE["data"] = data
-                _CATALOG_CACHE["fetched_at"] = mtime
-                return data
+            disk_mtime = disk_path.stat().st_mtime
+            disk_data = _json.loads(disk_path.read_text())
         except (OSError, ValueError):
-            pass  # corrupt or unreadable — fall through and refetch
+            disk_data = None  # corrupt or unreadable — treat as a miss
 
-    # Miss: fetch from Poly Haven
+    # Fresh enough? Serve from disk without a network call.
+    if disk_data is not None and now - disk_mtime < _CATALOG_TTL_SECONDS:
+        _CATALOG_CACHE["data"] = disk_data
+        _CATALOG_CACHE["fetched_at"] = disk_mtime
+        return disk_data
+
+    # Miss or expired: fetch from Poly Haven. On failure, fall back to whatever
+    # stale copy we have (disk, then in-memory) — stale beats "Search failed".
     url = "https://api.polyhaven.com/assets?type=textures"
     req = urllib.request.Request(url, headers={"User-Agent": "pbr2rad/0.1"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = _json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        stale = disk_data if disk_data is not None else _CATALOG_CACHE["data"]
+        if stale is not None:
+            # Serve the stale copy and mark it fresh for a full TTL so we don't
+            # re-hit a down upstream (and eat a 15s timeout) on every request.
+            # We'll retry the live fetch once this window lapses.
+            _CATALOG_CACHE["data"] = stale
+            _CATALOG_CACHE["fetched_at"] = now
+            return stale  # type: ignore[return-value]
+        raise  # nothing cached anywhere — let the caller surface a 502
 
     # Atomic write to disk (tempfile + os.replace — survives concurrent writes)
     try:
