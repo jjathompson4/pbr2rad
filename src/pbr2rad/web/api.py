@@ -7,14 +7,16 @@ import json
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from PIL import Image
 
 from .. import __version__
 from ..convert import ConvertOptions, convert_set, write_manifest
 from ..discover import PBRSet, discover
 from ..fetch import FetchError, download_texture_set
 from . import tempdir
+from .limits import rate_limit
 from .models import (
     ChannelMap,
     ConvertOptionsRequest,
@@ -27,6 +29,23 @@ from .models import (
 from .preview import radiance_available, render_preview
 
 router = APIRouter(prefix="/api/v1")
+
+
+# ---------------------------------------------------------------------------
+# Upload safety limits (public-tool hardening)
+# ---------------------------------------------------------------------------
+
+MAX_FILES = 12                          # files per request
+MAX_FILE_BYTES = 25 * 1024 * 1024       # 25 MB per file
+MAX_TOTAL_BYTES = 80 * 1024 * 1024      # 80 MB per request
+MAX_RESOLUTION = 2048                   # downscale ceiling (longest edge, px)
+_UPLOAD_CHUNK = 1024 * 1024             # 1 MB streaming read
+
+# Raster formats Pillow can open + the HDR/EXR maps the pipeline accepts.
+_ALLOWED_EXTS = {
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff",
+    ".bmp", ".webp", ".exr", ".hdr",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -116,14 +135,86 @@ async def _save_uploads(
     files: list[UploadFile],
     upload_dir: Path,
 ) -> list[str]:
-    """Save uploaded files to disk, return list of filenames."""
-    filenames = []
+    """Save uploaded files to disk, return list of filenames.
+
+    Enforces count, per-file size, total size, and extension limits, and
+    streams to disk in chunks so an oversized upload is rejected before it is
+    fully buffered in memory. Filenames are reduced to their basename to
+    prevent path-traversal escapes out of ``upload_dir``.
+    """
+    if not files:
+        raise HTTPException(400, "No files uploaded.")
+    if len(files) > MAX_FILES:
+        raise HTTPException(
+            413, f"Too many files ({len(files)}). Limit is {MAX_FILES} per request."
+        )
+
+    filenames: list[str] = []
+    total = 0
     for f in files:
-        dest = upload_dir / f.filename
-        content = await f.read()
-        dest.write_bytes(content)
-        filenames.append(f.filename)
+        name = Path(f.filename or "").name  # strip any directory components
+        if not name:
+            raise HTTPException(400, "An uploaded file is missing a filename.")
+        ext = Path(name).suffix.lower()
+        if ext not in _ALLOWED_EXTS:
+            raise HTTPException(
+                415,
+                f"Unsupported file type: {name!r}. Allowed: "
+                "png, jpg, jpeg, tif, tiff, bmp, webp, exr, hdr.",
+            )
+
+        dest = upload_dir / name
+        size = 0
+        try:
+            with dest.open("wb") as out:
+                while True:
+                    chunk = await f.read(_UPLOAD_CHUNK)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    total += len(chunk)
+                    if size > MAX_FILE_BYTES:
+                        raise HTTPException(
+                            413,
+                            f"{name!r} exceeds the "
+                            f"{MAX_FILE_BYTES // (1024 * 1024)} MB per-file limit.",
+                        )
+                    if total > MAX_TOTAL_BYTES:
+                        raise HTTPException(
+                            413,
+                            "Upload exceeds the "
+                            f"{MAX_TOTAL_BYTES // (1024 * 1024)} MB total limit.",
+                        )
+                    out.write(chunk)
+        except HTTPException:
+            dest.unlink(missing_ok=True)
+            raise
+        filenames.append(name)
     return filenames
+
+
+def _downscale_uploads(upload_dir: Path, max_dim: int = MAX_RESOLUTION) -> None:
+    """Downscale any image whose longest edge exceeds ``max_dim``, in place.
+
+    Caps per-job memory and output size for a public deployment. Non-raster or
+    unreadable files (e.g. .hdr/.exr with no Pillow decoder) are left untouched.
+    """
+    for p in upload_dir.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            with Image.open(p) as im:
+                im.load()
+                w, h = im.size
+                longest = max(w, h)
+                if longest <= max_dim:
+                    continue
+                scale = max_dim / longest
+                new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
+                im.resize(new_size, Image.LANCZOS).save(p)
+        except Exception:
+            # Not a Pillow-decodable raster; leave as-is.
+            continue
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +229,7 @@ async def health():
     )
 
 
-@router.post("/discover", response_model=DiscoverResponse)
+@router.post("/discover", response_model=DiscoverResponse, dependencies=[Depends(rate_limit)])
 async def discover_channels(
     files: list[UploadFile] = File(...),
 ):
@@ -163,7 +254,7 @@ async def discover_channels(
     return DiscoverResponse(name=pbr.name, channels=channels, extras=extras)
 
 
-@router.post("/convert/upload", response_model=ConvertResponse)
+@router.post("/convert/upload", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
 async def convert_upload(
     files: list[UploadFile] = File(...),
     options: str = Form("{}"),
@@ -173,6 +264,7 @@ async def convert_upload(
     """Upload images and convert to Radiance material."""
     job_id, upload_dir, output_dir = tempdir.new_job()
     await _save_uploads(files, upload_dir)
+    _downscale_uploads(upload_dir)
 
     # Parse options
     try:
@@ -213,7 +305,7 @@ async def convert_upload(
     return _make_response(job_id, result, has_preview)
 
 
-@router.post("/convert/polyhaven", response_model=ConvertResponse)
+@router.post("/convert/polyhaven", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
 async def convert_polyhaven(req: PolyHavenConvertRequest):
     """Fetch a Poly Haven material and convert to Radiance."""
     job_id, upload_dir, output_dir = tempdir.new_job()
@@ -226,6 +318,7 @@ async def convert_polyhaven(req: PolyHavenConvertRequest):
     except FetchError as exc:
         raise HTTPException(400, str(exc))
 
+    _downscale_uploads(mat_dir)
     pbr = discover(mat_dir)
     if pbr.albedo is None:
         raise HTTPException(400, f"No albedo map found in Poly Haven asset '{req.slug}'")
