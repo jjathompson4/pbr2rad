@@ -383,3 +383,41 @@ main > .panel {
   color: #555;
   text-transform: capitalize;
 }
+
+/* Header info button + popover */
+.header-info { margin-left: auto; position: relative; }
+
+#info-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid #555;
+  background: transparent;
+  color: #bbb;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+#info-btn:hover,
+#info-btn[aria-expanded="true"] {
+  background: #3a3a3a;
+  color: #fff;
+  border-color: #777;
+}
+
+.info-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.6rem);
+  width: 270px;
+  background: #fff;
+  color: #333;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  z-index: 100;
+}
+.info-popover p { margin: 0.3rem 0; line-height: 1.45; }

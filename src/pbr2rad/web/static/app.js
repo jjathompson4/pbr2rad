@@ -394,3 +394,30 @@ function showResult(data) {
   btn.style.display = "block";
   btn.textContent = "Download " + data.name + ".zip";
 }
+
+// ---------------------------------------------------------------------------
+// Header info popover
+// ---------------------------------------------------------------------------
+
+const infoBtn = document.getElementById("info-btn");
+const infoPopover = document.getElementById("info-popover");
+
+function closeInfoPopover() {
+  infoPopover.hidden = true;
+  infoBtn.setAttribute("aria-expanded", "false");
+}
+
+infoBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const opening = infoPopover.hidden;
+  infoPopover.hidden = !opening;
+  infoBtn.setAttribute("aria-expanded", String(opening));
+});
+
+document.addEventListener("click", (e) => {
+  if (!infoPopover.hidden && !infoPopover.contains(e.target)) closeInfoPopover();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !infoPopover.hidden) closeInfoPopover();
+});
