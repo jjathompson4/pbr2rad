@@ -1,0 +1,26 @@
+# Fly.io configuration for pbr2rad.com
+# Docs: https://fly.io/docs/reference/configuration/
+
+app = "pbr2rad"          # fly app names are global — `fly launch` will prompt if taken
+primary_region = "ord"   # change to the region nearest you (fly platform regions)
+
+[build]
+  # Uses the Dockerfile in this directory.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # scale to zero when idle — near-$0 at hobby traffic
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/v1/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"   # headroom for Pillow on 2048px maps + Radiance previews

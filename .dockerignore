@@ -1,0 +1,18 @@
+.git
+.claude
+__pycache__
+*.pyc
+.pytest_cache
+*.egg-info
+
+# Local working data — not needed in the image
+materials/
+output/
+scenes/
+tests/
+docs/
+scripts/
+pbr2rad-audit/
+CHANGELOG.md
+Dockerfile
+fly.toml

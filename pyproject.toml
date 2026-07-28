@@ -23,3 +23,6 @@ pbr2rad = "pbr2rad.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"pbr2rad.web" = ["static/*"]
