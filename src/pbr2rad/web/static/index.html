@@ -4,21 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>pbr2rad</title>
-  <link rel="stylesheet" href="/static/style.css?v=7">
+  <script>
+    // Set theme before first paint to avoid a flash of the wrong mode.
+    document.documentElement.dataset.theme =
+      localStorage.getItem("theme") ||
+      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  </script>
+  <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 
 <header>
   <h1>pbr2rad</h1>
   <span>PBR to Radiance Material Converter</span>
-  <div class="header-info">
-    <button id="info-btn" type="button" aria-label="Help and contact" aria-expanded="false">?</button>
-    <div class="info-popover" id="info-popover" hidden>
-      <p>Questions, bug reports, or ideas? Email
-        <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.</p>
-      <p>More from Jeff Thompson at
-        <a href="https://thompsonjeff.com" target="_blank" rel="noopener">thompsonjeff.com</a>.</p>
-    </div>
+  <span class="badge-experimental">Experimental</span>
+  <div class="header-actions">
+    <button id="theme-btn" type="button" aria-label="Toggle dark mode">&#127769;</button>
   </div>
 </header>
 
@@ -172,13 +173,17 @@
   </div>
 </main>
 
-<footer style="text-align:center;padding:0.75rem;font-size:0.8em;color:#666;border-top:1px solid #eee;margin-top:1rem">
-  Textures provided by
-  <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>
-  under CC0. If you find them useful, consider
-  <a href="https://www.patreon.com/polyhaven" target="_blank" rel="noopener">supporting them on Patreon</a>.
+<footer>
+  <p>Questions, bug reports, or ideas? Email
+    <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.
+    More from Jeff Thompson at
+    <a href="https://thompsonjeff.com" target="_blank" rel="noopener">thompsonjeff.com</a>.</p>
+  <p>Textures provided by
+    <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>
+    under CC0. If you find them useful, consider
+    <a href="https://www.patreon.com/polyhaven" target="_blank" rel="noopener">supporting them on Patreon</a>.</p>
 </footer>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

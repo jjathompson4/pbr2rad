@@ -396,28 +396,22 @@ function showResult(data) {
 }
 
 // ---------------------------------------------------------------------------
-// Header info popover
+// Light / dark theme toggle (initial theme is set pre-paint in index.html)
 // ---------------------------------------------------------------------------
 
-const infoBtn = document.getElementById("info-btn");
-const infoPopover = document.getElementById("info-popover");
+const themeBtn = document.getElementById("theme-btn");
 
-function closeInfoPopover() {
-  infoPopover.hidden = true;
-  infoBtn.setAttribute("aria-expanded", "false");
+function syncThemeButton() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  themeBtn.textContent = dark ? "☀️" : "\u{1F319}";
+  themeBtn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
 }
 
-infoBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  const opening = infoPopover.hidden;
-  infoPopover.hidden = !opening;
-  infoBtn.setAttribute("aria-expanded", String(opening));
+themeBtn.addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  syncThemeButton();
 });
 
-document.addEventListener("click", (e) => {
-  if (!infoPopover.hidden && !infoPopover.contains(e.target)) closeInfoPopover();
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !infoPopover.hidden) closeInfoPopover();
-});
+syncThemeButton();
