@@ -402,8 +402,8 @@ function showResult(data) {
 const themeBtn = document.getElementById("theme-btn");
 
 function syncThemeButton() {
+  // Icon swap is pure CSS ([data-theme] show/hide); only the label lives here.
   const dark = document.documentElement.dataset.theme === "dark";
-  themeBtn.textContent = dark ? "☀️" : "\u{1F319}";
   themeBtn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
 }
 

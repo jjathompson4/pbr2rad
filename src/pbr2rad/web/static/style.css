@@ -102,12 +102,20 @@ header span { font-size: 0.85rem; color: var(--header-muted); }
   border-radius: 50%;
   border: 1px solid #555;
   background: transparent;
-  font-size: 0.85rem;
-  line-height: 1;
+  color: #bbb;
   cursor: pointer;
   padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-#theme-btn:hover { background: #3a3a3a; border-color: #777; }
+#theme-btn:hover { background: #3a3a3a; border-color: #777; color: #fff; }
+#theme-btn svg { width: 15px; height: 15px; display: block; }
+
+/* Moon in light mode (click → dark), sun in dark mode (click → light). */
+#theme-btn .icon-sun { display: none; }
+[data-theme="dark"] #theme-btn .icon-sun { display: block; }
+[data-theme="dark"] #theme-btn .icon-moon { display: none; }
 
 main {
   /* Three-column viewport-fit: options | source | output.
