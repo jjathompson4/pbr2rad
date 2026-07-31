@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import os
+import threading
+import time
 import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image
 
@@ -16,7 +21,7 @@ from ..convert import ConvertOptions, convert_set, write_manifest
 from ..discover import PBRSet, discover
 from ..fetch import FetchError, download_texture_set
 from . import tempdir
-from .limits import rate_limit
+from .limits import rate_limit, rate_limit_light
 from .models import (
     ChannelMap,
     ConvertOptionsRequest,
@@ -28,7 +33,18 @@ from .models import (
 )
 from .preview import radiance_available, render_preview
 
+log = logging.getLogger("pbr2rad.web")
+
 router = APIRouter(prefix="/api/v1")
+
+# One conversion at a time: the deployment target is a single shared vCPU,
+# so a second concurrent convert only adds thrash and memory pressure.
+# Contention returns a fast 503 instead of queueing.
+_CONVERT_LOCK = threading.BoundedSemaphore(1)
+_BUSY_DETAIL = (
+    "Another conversion is already running — this tool processes one at a "
+    "time. Try again in a few seconds."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +218,7 @@ def _downscale_uploads(upload_dir: Path, max_dim: int = MAX_RESOLUTION) -> None:
     for p in upload_dir.iterdir():
         if not p.is_file():
             continue
+        tmp = p.with_name(f".{p.name}.resize_tmp")
         try:
             with Image.open(p) as im:
                 im.load()
@@ -211,9 +228,15 @@ def _downscale_uploads(upload_dir: Path, max_dim: int = MAX_RESOLUTION) -> None:
                     continue
                 scale = max_dim / longest
                 new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
-                im.resize(new_size, Image.LANCZOS).save(p)
+                # Write to a sibling temp file and os.replace() over the
+                # original. Saving in place would write THROUGH the hardlink
+                # that _place_from_cache creates, silently corrupting the
+                # shared Poly Haven cache entry; replace() breaks the link.
+                im.resize(new_size, Image.LANCZOS).save(tmp, format=im.format)
+            os.replace(tmp, p)
         except Exception:
             # Not a Pillow-decodable raster; leave as-is.
+            tmp.unlink(missing_ok=True)
             continue
 
 
@@ -237,7 +260,7 @@ async def discover_channels(
     job_id, upload_dir, _ = tempdir.new_job()
     await _save_uploads(files, upload_dir)
 
-    pbr = discover(upload_dir)
+    pbr = await run_in_threadpool(discover, upload_dir)
 
     # Build response: for each file, show what channel it was assigned
     channels = []
@@ -254,6 +277,44 @@ async def discover_channels(
     return DiscoverResponse(name=pbr.name, channels=channels, extras=extras)
 
 
+def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
+    """Run the conversion + optional preview render. Blocking; call in a thread."""
+    try:
+        result = convert_set(pbr, output_dir, opts)
+        write_manifest([result], output_dir)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        # Bad input (e.g. invalid material name) — the caller's fault.
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("conversion failed for %r", pbr.name)
+        raise HTTPException(500, f"Conversion failed: {exc}")
+
+    has_preview = False
+    if radiance_available():
+        preview_png = output_dir / result.name / "preview.png"
+        has_preview = render_preview(
+            result.out_dir, result.rad_file, preview_png,
+        )
+    return result, has_preview
+
+
+async def _run_conversion(job_id: str, work) -> ConvertResponse:
+    """Run blocking conversion work in the threadpool, one job at a time.
+
+    The event loop stays free to serve health checks and browsing traffic
+    while the conversion grinds on the CPU.
+    """
+    if not _CONVERT_LOCK.acquire(blocking=False):
+        raise HTTPException(503, _BUSY_DETAIL, headers={"Retry-After": "15"})
+    try:
+        result, has_preview = await run_in_threadpool(work)
+    finally:
+        _CONVERT_LOCK.release()
+    return _make_response(job_id, result, has_preview)
+
+
 @router.post("/convert/upload", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
 async def convert_upload(
     files: list[UploadFile] = File(...),
@@ -264,91 +325,69 @@ async def convert_upload(
     """Upload images and convert to Radiance material."""
     job_id, upload_dir, output_dir = tempdir.new_job()
     await _save_uploads(files, upload_dir)
-    _downscale_uploads(upload_dir)
 
-    # Parse options
+    # Parse options/channels up front: cheap, and bad input should fail
+    # before any heavy work starts.
     try:
         opts_req = ConvertOptionsRequest(**json.loads(options))
-    except (json.JSONDecodeError, Exception) as exc:
+    except Exception as exc:
         raise HTTPException(400, f"Invalid options JSON: {exc}")
-
     opts = _opts_from_request(opts_req)
 
-    # Build PBRSet: user labels or auto-discover
+    channel_list: list[ChannelMap] | None = None
     if channels.strip():
         try:
             channel_list = [ChannelMap(**c) for c in json.loads(channels)]
-        except (json.JSONDecodeError, Exception) as exc:
+        except Exception as exc:
             raise HTTPException(400, f"Invalid channels JSON: {exc}")
-        mat_name = name or "material"
-        pbr = _build_pbrset_from_labels(channel_list, upload_dir, mat_name)
-    else:
-        pbr = discover(upload_dir, name=name or None)
 
-    if pbr.albedo is None:
-        raise HTTPException(400, "No albedo/diffuse map found. Label at least one file as 'albedo'.")
+    def work():
+        _downscale_uploads(upload_dir)
+        if channel_list is not None:
+            pbr = _build_pbrset_from_labels(channel_list, upload_dir, name or "material")
+        else:
+            pbr = discover(upload_dir, name=name or None)
+        if pbr.albedo is None:
+            raise HTTPException(
+                400, "No albedo/diffuse map found. Label at least one file as 'albedo'."
+            )
+        return _convert_and_preview(pbr, output_dir, opts)
 
-    try:
-        result = convert_set(pbr, output_dir, opts)
-        write_manifest([result], output_dir)
-    except Exception as exc:
-        raise HTTPException(500, f"Conversion failed: {exc}")
-
-    # Try render preview
-    has_preview = False
-    if radiance_available():
-        preview_png = output_dir / result.name / "preview.png"
-        has_preview = render_preview(
-            result.out_dir, result.rad_file, preview_png,
-        )
-
-    return _make_response(job_id, result, has_preview)
+    return await _run_conversion(job_id, work)
 
 
 @router.post("/convert/polyhaven", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
 async def convert_polyhaven(req: PolyHavenConvertRequest):
     """Fetch a Poly Haven material and convert to Radiance."""
     job_id, upload_dir, output_dir = tempdir.new_job()
-
-    try:
-        mat_dir = download_texture_set(
-            req.slug, upload_dir,
-            resolution=req.resolution, fmt=req.fmt,
-        )
-    except FetchError as exc:
-        raise HTTPException(400, str(exc))
-
-    _downscale_uploads(mat_dir)
-    pbr = discover(mat_dir)
-    if pbr.albedo is None:
-        raise HTTPException(400, f"No albedo map found in Poly Haven asset '{req.slug}'")
-
     opts = _opts_from_request(req.options)
 
-    try:
-        result = convert_set(pbr, output_dir, opts)
-        write_manifest([result], output_dir)
-    except Exception as exc:
-        raise HTTPException(500, f"Conversion failed: {exc}")
+    def work():
+        try:
+            mat_dir = download_texture_set(
+                req.slug, upload_dir,
+                resolution=req.resolution, fmt=req.fmt,
+            )
+        except FetchError as exc:
+            raise HTTPException(400, str(exc))
 
-    has_preview = False
-    if radiance_available():
-        preview_png = output_dir / result.name / "preview.png"
-        has_preview = render_preview(
-            result.out_dir, result.rad_file, preview_png,
-        )
+        _downscale_uploads(mat_dir)
+        pbr = discover(mat_dir)
+        if pbr.albedo is None:
+            raise HTTPException(400, f"No albedo map found in Poly Haven asset '{req.slug}'")
+        return _convert_and_preview(pbr, output_dir, opts)
 
-    return _make_response(job_id, result, has_preview)
+    return await _run_conversion(job_id, work)
 
 
-@router.get("/download/{job_id}")
+@router.get("/download/{job_id}", dependencies=[Depends(rate_limit_light)])
 async def download(job_id: str):
     """Download the converted material as a zip file."""
     out_dir = tempdir.get_output_dir(job_id)
     if out_dir is None:
         raise HTTPException(404, "Job not found or expired")
 
-    buf = _zip_directory(out_dir)
+    buf = await run_in_threadpool(_zip_directory, out_dir)
     return StreamingResponse(
         buf,
         media_type="application/zip",
@@ -356,7 +395,7 @@ async def download(job_id: str):
     )
 
 
-@router.get("/preview/{job_id}")
+@router.get("/preview/{job_id}", dependencies=[Depends(rate_limit_light)])
 async def preview(job_id: str):
     """Return the render preview PNG for a job."""
     out_dir = tempdir.get_output_dir(job_id)
@@ -460,11 +499,11 @@ def _polyhaven_catalog() -> dict:
     return data
 
 
-@router.get("/polyhaven/search")
+@router.get("/polyhaven/search", dependencies=[Depends(rate_limit_light)])
 async def polyhaven_search(q: str = ""):
     """Search Poly Haven textures (catalog cached for 1 hour)."""
     try:
-        all_assets = _polyhaven_catalog()
+        all_assets = await run_in_threadpool(_polyhaven_catalog)
     except Exception as exc:
         raise HTTPException(502, f"Poly Haven API error: {exc}")
 
@@ -488,22 +527,50 @@ async def polyhaven_search(q: str = ""):
     return results
 
 
-@router.get("/polyhaven/{slug}/info")
-async def polyhaven_info(slug: str):
-    """Get Poly Haven asset info and available resolutions."""
-    from ..fetch import fetch_asset_info, fetch_asset_files, FetchError
+# Per-slug cache for asset info: every thumbnail click used to cost two
+# uncached upstream round-trips (up to 60s). Same TTL policy as the catalog.
+_INFO_CACHE: dict[str, tuple[float, dict]] = {}
+_INFO_TTL_SECONDS = 3600
+_INFO_CACHE_MAX = 512
 
+
+def _polyhaven_info_data(slug: str) -> dict:
+    """Fetch (or serve cached) asset info + file listing. Blocking."""
+    from ..fetch import fetch_asset_info, fetch_asset_files
+
+    now = time.time()
+    hit = _INFO_CACHE.get(slug)
+    if hit is not None and now - hit[0] < _INFO_TTL_SECONDS:
+        return hit[1]
+
+    info = fetch_asset_info(slug)
+    files = fetch_asset_files(slug)
+    payload = _build_info_payload(slug, info, files)
+
+    if len(_INFO_CACHE) >= _INFO_CACHE_MAX:
+        oldest = min(_INFO_CACHE, key=lambda k: _INFO_CACHE[k][0])
+        _INFO_CACHE.pop(oldest, None)
+    _INFO_CACHE[slug] = (now, payload)
+    return payload
+
+
+@router.get("/polyhaven/{slug}/info", dependencies=[Depends(rate_limit_light)])
+async def polyhaven_info(slug: str):
+    """Get Poly Haven asset info and available resolutions (cached 1h)."""
     try:
-        info = fetch_asset_info(slug)
-        files = fetch_asset_files(slug)
+        return await run_in_threadpool(_polyhaven_info_data, slug)
     except FetchError as exc:
         raise HTTPException(404, str(exc))
 
+
+def _build_info_payload(slug: str, info: dict, files: dict) -> dict:
     # Extract available resolutions
+    # (capped at 2k — the tool never fetches anything larger)
     resolutions = set()
     for channel_data in files.values():
         if isinstance(channel_data, dict):
             resolutions.update(channel_data.keys())
+    resolutions &= {"1k", "2k"}
 
     # Build per-map previews. Map Poly Haven channel keys to our discover
     # channel names so the frontend can pass rotations back under the same
@@ -519,7 +586,7 @@ async def polyhaven_info(slug: str):
         "arm": "arm",
     }
     # Prefer a low-res JPG for the UI thumbnail to keep the browser grid snappy.
-    PREVIEW_RES_ORDER = ("1k", "2k", "4k")
+    PREVIEW_RES_ORDER = ("1k", "2k")
     maps = []
     for ph_key, internal in _PH_TO_INTERNAL.items():
         ch = files.get(ph_key)

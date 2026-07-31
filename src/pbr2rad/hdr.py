@@ -13,7 +13,6 @@ Reference: Greg Ward, "Real Pixels" (Graphics Gems II, 1991).
 from __future__ import annotations
 
 import math
-import struct
 from pathlib import Path
 
 from PIL import Image
@@ -282,14 +281,16 @@ def average_gray(src: Path) -> float:
     img = Image.open(src)
     mode = img.mode
 
-    if mode in ("I;16", "I"):
-        # 16-bit image — read raw 16-bit values to avoid Pillow's
-        # lossy conversion to 8-bit "L" mode which saturates values.
-        data = img.tobytes()
-        if not data:
+    if mode.startswith("I"):
+        # Integer modes: "I;16"/"I;16L"/"I;16B" are 16-bit; plain "I" is
+        # 32-bit (a 16-bit PNG often loads as "I"). getdata() decodes the
+        # correct width/endianness for every variant — do NOT struct-unpack
+        # raw bytes here: treating "I" as 16-bit shorts doubles the pixel
+        # count with garbage values. Values are normalised as 16-bit.
+        pixels = list(img.getdata())
+        if not pixels:
             return 0.0
-        pixels = struct.unpack(f"<{len(data) // 2}H", data)
-        return sum(pixels) / (65535.0 * len(pixels))
+        return min(1.0, sum(pixels) / (65535.0 * len(pixels)))
 
     # 8-bit path (original behaviour)
     img = img.convert("L")
@@ -299,13 +300,9 @@ def average_gray(src: Path) -> float:
     return sum(data) / (255.0 * len(data))
 
 
-# Silence unused-import warnings in __all__.
 __all__ = [
     "write_hdr",
     "convert_ldr_to_hdr",
     "average_rgb",
     "average_gray",
 ]
-
-# struct is used by average_gray for 16-bit images.
-_ = struct

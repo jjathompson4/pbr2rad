@@ -6,14 +6,23 @@ converted material.  Falls back gracefully if Radiance is not installed.
 
 from __future__ import annotations
 
+import functools
+import logging
 import shutil
 import subprocess
 import os
 from pathlib import Path
 
+log = logging.getLogger("pbr2rad.web")
 
+
+@functools.lru_cache(maxsize=1)
 def radiance_available() -> bool:
-    """Return True if Radiance tools are on PATH."""
+    """Return True if Radiance tools are on PATH.
+
+    Cached: the answer can't change within one process (the deployment bakes
+    Radiance into the image), and this sits on the health-check hot path.
+    """
     return shutil.which("rpict") is not None and shutil.which("oconv") is not None
 
 
@@ -22,7 +31,7 @@ def render_preview(
     rad_file: Path,
     output_png: Path,
     *,
-    size: int = 512,
+    size: int = 384,
 ) -> bool:
     """Render a preview sphere with the given material.
 
@@ -88,25 +97,30 @@ def render_preview(
                     "-vu", "0", "0", "1",
                     "-vh", "42", "-vv", "42",
                     "-x", str(size), "-y", str(size),
-                    "-ab", "3",          # ambient bounces
-                    "-aa", "0.05",       # ambient accuracy (tighter)
-                    "-ad", "1024",       # ambient divisions (less noise)
-                    "-as", "512",        # ambient super-samples
+                    # Ambient settings tuned for a shared vCPU: good enough
+                    # for a thumbnail, several times faster than the old
+                    # -ab 3 / -ad 1024 / -as 512 settings which routinely
+                    # approached the timeout on small hosts.
+                    "-ab", "2",          # ambient bounces
+                    "-aa", "0.1",        # ambient accuracy
+                    "-ad", "512",        # ambient divisions
+                    "-as", "256",        # ambient super-samples
                     "-ps", "1",          # no pixel sub-sampling
                     str(octree),
                 ],
                 stdout=f, stderr=subprocess.PIPE,
-                check=True, timeout=120, env=env,
+                check=True, timeout=60, env=env,
             )
 
         # Convert to PNG via pfilt + ra_bmp + Pillow
         filtered = work / "preview_filt.hdr"
         bmp = work / "preview.bmp"
-        subprocess.run(
-            ["pfilt", "-1", "-e", "+1.4", str(hdr)],
-            stdout=open(filtered, "wb"), stderr=subprocess.PIPE,
-            check=True, timeout=30, env=env,
-        )
+        with open(filtered, "wb") as f:
+            subprocess.run(
+                ["pfilt", "-1", "-e", "+1.4", str(hdr)],
+                stdout=f, stderr=subprocess.PIPE,
+                check=True, timeout=30, env=env,
+            )
         subprocess.run(
             ["ra_bmp", str(filtered), str(bmp)],
             stderr=subprocess.PIPE, check=True, timeout=30, env=env,
@@ -117,5 +131,16 @@ def render_preview(
         img.save(output_png)
         return True
 
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, Exception):
+    except subprocess.TimeoutExpired as exc:
+        log.warning("preview render timed out (%s) for %s", exc.cmd[0], rad_file.name)
+        return False
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode(errors="replace").strip()
+        log.warning(
+            "preview render failed (%s, exit %d) for %s: %s",
+            exc.cmd[0], exc.returncode, rad_file.name, stderr[-500:],
+        )
+        return False
+    except Exception:
+        log.exception("preview render failed for %s", rad_file.name)
         return False

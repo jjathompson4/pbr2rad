@@ -7,12 +7,14 @@ A background cleanup task removes directories older than ``MAX_AGE_SECONDS``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import tempfile
 import time
 import uuid
 from pathlib import Path
 
+log = logging.getLogger("pbr2rad.web")
 
 MAX_AGE_SECONDS = 30 * 60  # 30 minutes
 CLEANUP_INTERVAL = 5 * 60  # check every 5 minutes
@@ -62,8 +64,16 @@ def cleanup() -> int:
     root = get_root()
     now = time.time()
     removed = 0
-    for d in root.iterdir():
-        if d.is_dir() and (now - d.stat().st_mtime) > MAX_AGE_SECONDS:
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for d in entries:
+        try:
+            expired = d.is_dir() and (now - d.stat().st_mtime) > MAX_AGE_SECONDS
+        except OSError:
+            continue  # vanished between iterdir() and stat() — someone else's problem
+        if expired:
             shutil.rmtree(d, ignore_errors=True)
             removed += 1
     return removed
@@ -78,7 +88,20 @@ def teardown() -> None:
 
 
 async def cleanup_loop() -> None:
-    """Background cleanup task — runs until cancelled."""
+    """Background cleanup task — runs until cancelled.
+
+    Each sweep runs in a worker thread (rmtree over multi-hundred-MB job
+    dirs is real I/O) and is individually exception-guarded: nobody awaits
+    this task, so an escaped exception would silently kill cleanup for the
+    life of the process and let the disk fill.
+    """
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL)
-        cleanup()
+        try:
+            removed = await asyncio.to_thread(cleanup)
+            if removed:
+                log.info("temp cleanup: removed %d expired job dir(s)", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("temp cleanup sweep failed; will retry next interval")

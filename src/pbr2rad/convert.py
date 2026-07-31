@@ -111,6 +111,17 @@ def convert_set(
     if pbr.albedo is None:
         raise ValueError(f"PBR set {pbr.name!r} has no albedo map — cannot convert")
 
+    # The set name becomes a directory component; reject anything that could
+    # escape out_root (the web layer passes user-supplied names through here).
+    name = pbr.name
+    if (
+        not name
+        or name in (".", "..")
+        or any(ch in name for ch in ("/", "\\", ":", "\0"))
+        or ".." in name
+    ):
+        raise ValueError(f"Invalid material name {name!r}")
+
     out_dir = Path(out_root) / pbr.name
     out_dir.mkdir(parents=True, exist_ok=True)
 

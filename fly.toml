@@ -4,6 +4,10 @@
 app = "pbr2rad"          # fly app names are global — `fly launch` will prompt if taken
 primary_region = "ord"   # change to the region nearest you (fly platform regions)
 
+# OOM insurance: the conversion pipeline peaks at several hundred MB on 2k
+# sets until the Phase B vectorization lands. Swap keeps a spike survivable.
+swap_size_mb = 512
+
 [build]
   # Uses the Dockerfile in this directory.
 

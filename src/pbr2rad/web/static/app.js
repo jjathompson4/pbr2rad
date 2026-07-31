@@ -10,6 +10,36 @@ let uploadedFiles = [];
 let selectedPHSlug = null;
 let selectedPHRes = "1k";
 
+// Conversions can legitimately take a couple of minutes on the small host;
+// past this we assume the request is lost and give the button back.
+const CONVERT_TIMEOUT_MS = 240000;
+
+// Build a readable message from any error response. Cloudflare 429/5xx
+// bodies are HTML, so never assume JSON; our own errors carry {detail}.
+async function apiError(resp) {
+  let detail = "";
+  const ctype = resp.headers.get("Content-Type") || "";
+  if (ctype.includes("application/json")) {
+    try { detail = (await resp.json()).detail || ""; } catch (e) { /* not JSON after all */ }
+  }
+  if (detail) return detail;
+  const retry = resp.headers.get("Retry-After");
+  if (resp.status === 429) {
+    return "Rate limited — try again in " + (retry ? "~" + retry + "s" : "a few seconds") + ".";
+  }
+  if (resp.status === 503) return "Server busy — try again in a few seconds.";
+  return "Request failed (HTTP " + resp.status + ")";
+}
+
+// Normalize thrown errors (incl. AbortSignal.timeout) for display.
+function errMessage(err) {
+  if (err && err.name === "TimeoutError") {
+    return "Timed out after " + Math.round(CONVERT_TIMEOUT_MS / 60000) +
+      " minutes. The server may be overloaded — please try again.";
+  }
+  return err && err.message ? err.message : String(err);
+}
+
 // ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
@@ -87,6 +117,7 @@ async function handleFiles(fileList) {
 
   try {
     const resp = await fetch("/api/v1/discover", { method: "POST", body: form });
+    if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
 
     // Populate channel table
@@ -109,7 +140,7 @@ async function handleFiles(fileList) {
 
     setStatus("Channels detected. Review and click Convert.", "success");
   } catch (err) {
-    setStatus("Discovery failed: " + err.message, "error");
+    setStatus("Discovery failed: " + errMessage(err), "error");
   }
 }
 
@@ -141,36 +172,45 @@ document.getElementById("convert-btn").addEventListener("click", async () => {
   form.append("name", document.getElementById("material-name").value || "material");
 
   try {
-    const resp = await fetch("/api/v1/convert/upload", { method: "POST", body: form });
-    if (!resp.ok) {
-      const err = await resp.json();
-      throw new Error(err.detail || "Conversion failed");
-    }
+    const resp = await fetch("/api/v1/convert/upload", {
+      method: "POST", body: form,
+      signal: AbortSignal.timeout(CONVERT_TIMEOUT_MS),
+    });
+    if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
     showResult(data);
   } catch (err) {
-    setStatus("Error: " + err.message, "error");
+    setStatus("Error: " + errMessage(err), "error");
+  } finally {
+    document.getElementById("convert-btn").disabled = false;
   }
-
-  document.getElementById("convert-btn").disabled = false;
 });
 
 // ---------------------------------------------------------------------------
 // Poly Haven
 // ---------------------------------------------------------------------------
 
+// Debounced above typical inter-keystroke gaps so a deliberate typist fires
+// one request per pause, not one per key. In-flight searches are aborted
+// when superseded.
 let phSearchTimeout = null;
+let phSearchAbort = null;
 document.getElementById("ph-search").addEventListener("input", e => {
   clearTimeout(phSearchTimeout);
-  phSearchTimeout = setTimeout(() => searchPolyHaven(e.target.value), 400);
+  phSearchTimeout = setTimeout(() => searchPolyHaven(e.target.value), 700);
 });
 
 async function searchPolyHaven(q) {
   const grid = document.getElementById("ph-grid");
   grid.innerHTML = "<p style='color:#999;font-size:0.85rem'>Searching...</p>";
 
+  if (phSearchAbort) phSearchAbort.abort();
+  phSearchAbort = new AbortController();
+
   try {
-    const resp = await fetch(`/api/v1/polyhaven/search?q=${encodeURIComponent(q)}`);
+    const resp = await fetch(`/api/v1/polyhaven/search?q=${encodeURIComponent(q)}`,
+      { signal: phSearchAbort.signal });
+    if (!resp.ok) throw new Error(await apiError(resp));
     const results = await resp.json();
     grid.innerHTML = "";
 
@@ -178,51 +218,71 @@ async function searchPolyHaven(q) {
       const div = document.createElement("div");
       div.className = "ph-item";
       div.innerHTML = `<img src="${item.preview}" alt="${item.name}" loading="lazy"><div class="ph-item-name">${item.name}</div>`;
-      div.addEventListener("click", () => selectPHItem(item.slug, item.name));
+      div.addEventListener("click", () => selectPHItem(item.slug, item.name, div));
       grid.appendChild(div);
     });
 
     if (!results.length) grid.innerHTML = "<p style='color:#999;font-size:0.85rem'>No results</p>";
   } catch (err) {
-    grid.innerHTML = "<p style='color:#c62828;font-size:0.85rem'>Search failed</p>";
+    if (err && err.name === "AbortError") return; // superseded by a newer search
+    grid.innerHTML = `<p style='color:#c62828;font-size:0.85rem'>Search failed: ${errMessage(err)}</p>`;
   }
 }
 
-async function selectPHItem(slug, name) {
+function addResButton(picker, res) {
+  const btn = document.createElement("button");
+  btn.className = "res-btn" + (res === selectedPHRes ? " active" : "");
+  btn.textContent = res;
+  btn.addEventListener("click", () => {
+    selectedPHRes = res;
+    picker.querySelectorAll(".res-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
+  picker.appendChild(btn);
+}
+
+let phInfoAbort = null;
+
+async function selectPHItem(slug, name, el) {
   selectedPHSlug = slug;
 
   // Highlight
-  document.querySelectorAll(".ph-item").forEach(el => el.classList.remove("selected"));
-  event.currentTarget.closest(".ph-item").classList.add("selected");
+  document.querySelectorAll(".ph-item").forEach(x => x.classList.remove("selected"));
+  el.classList.add("selected");
 
-  // Show detail
+  // Show detail; clear stale state from the previously selected asset so a
+  // failed info fetch can't leave the old asset's maps under the new name.
   const detail = document.getElementById("ph-detail");
   document.getElementById("ph-detail-name").textContent = name;
   detail.style.display = "block";
-
-  // Reset per-map rotation state whenever a new asset is selected.
   phRotatePerMap = {};
+  const picker = document.getElementById("ph-res-picker");
+  picker.innerHTML = "";
+  document.getElementById("ph-maps-grid").innerHTML = "";
 
-  // Fetch resolutions + per-map thumbnails
+  // Fetch resolutions + per-map thumbnails (aborting any in-flight fetch
+  // from a rapid previous click).
+  if (phInfoAbort) phInfoAbort.abort();
+  phInfoAbort = new AbortController();
   try {
-    const resp = await fetch(`/api/v1/polyhaven/${slug}/info`);
+    const resp = await fetch(`/api/v1/polyhaven/${slug}/info`,
+      { signal: phInfoAbort.signal });
+    if (!resp.ok) throw new Error(await apiError(resp));
     const info = await resp.json();
-    const picker = document.getElementById("ph-res-picker");
-    picker.innerHTML = "";
-    (info.resolutions || ["1k", "2k", "4k"]).forEach(res => {
-      const btn = document.createElement("button");
-      btn.className = "res-btn" + (res === selectedPHRes ? " active" : "");
-      btn.textContent = res;
-      btn.addEventListener("click", () => {
-        selectedPHRes = res;
-        picker.querySelectorAll(".res-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-      });
-      picker.appendChild(btn);
-    });
+    let resolutions = info.resolutions || [];
+    if (!resolutions.length) resolutions = ["1k", "2k"];
+    resolutions.forEach(res => addResButton(picker, res));
+    // Keep the selection valid if this asset lacks the previously chosen res.
+    if (!resolutions.includes(selectedPHRes)) {
+      selectedPHRes = resolutions[0];
+      picker.querySelector(".res-btn").classList.add("active");
+    }
     renderPHMapsGrid(info.maps || []);
   } catch (err) {
-    // Fall back to default resolutions
+    if (err && err.name === "AbortError") return; // superseded by a newer click
+    // Conversion still works without the details — offer the standard picks.
+    ["1k", "2k"].forEach(res => addResButton(picker, res));
+    setStatus("Couldn't load asset details: " + errMessage(err), "error");
   }
 }
 
@@ -303,6 +363,7 @@ document.getElementById("ph-convert-btn").addEventListener("click", async () => 
     const resp = await fetch("/api/v1/convert/polyhaven", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(CONVERT_TIMEOUT_MS),
       body: JSON.stringify({
         slug: selectedPHSlug,
         resolution: selectedPHRes,
@@ -311,17 +372,14 @@ document.getElementById("ph-convert-btn").addEventListener("click", async () => 
       }),
     });
 
-    if (!resp.ok) {
-      const err = await resp.json();
-      throw new Error(err.detail || "Conversion failed");
-    }
+    if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
     showResult(data);
   } catch (err) {
-    setStatus("Error: " + err.message, "error");
+    setStatus("Error: " + errMessage(err), "error");
+  } finally {
+    document.getElementById("ph-convert-btn").disabled = false;
   }
-
-  document.getElementById("ph-convert-btn").disabled = false;
 });
 
 // ---------------------------------------------------------------------------

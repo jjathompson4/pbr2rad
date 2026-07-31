@@ -260,12 +260,18 @@ class TestFetchCLI:
         assert args.output == Path("/tmp/out")
 
     def test_fetch_resolution_option(self):
-        """Verify fetch resolution option."""
+        """Verify fetch resolution option (policy: 1k default, 2k ceiling)."""
+        import pytest
+
         from pbr2rad.cli import _build_fetch_parser
 
         parser = _build_fetch_parser()
-        args = parser.parse_args(["rock_ground", "-o", "/tmp/out", "--resolution", "4k"])
-        assert args.resolution == "4k"
+        args = parser.parse_args(["rock_ground", "-o", "/tmp/out", "--resolution", "2k"])
+        assert args.resolution == "2k"
+
+        # Anything above 2k is rejected outright.
+        with pytest.raises(SystemExit):
+            parser.parse_args(["rock_ground", "-o", "/tmp/out", "--resolution", "4k"])
 
     def test_convert_subcommand_parses(self):
         """Verify convert subcommand still works via main()."""

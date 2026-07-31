@@ -9,7 +9,6 @@ Converts a PBR normal map (PNG, OpenGL or DirectX convention) into:
 
 from __future__ import annotations
 
-import struct
 from pathlib import Path
 
 from PIL import Image
@@ -18,15 +17,17 @@ from PIL import Image
 def _read_channel_f(img: Image.Image, channel: int) -> list[float]:
     """Extract one channel from an image as a list of 0..1 floats.
 
-    Handles both 8-bit (L/RGB) and 16-bit (I;16) images.
+    Handles 8-bit (L/RGB) and 16/32-bit integer (I-family) images.
     """
     mode = img.mode
 
-    if mode == "I;16":
-        # 16-bit single-channel — raw bytes, little-endian unsigned shorts
-        data = img.tobytes()
-        pixels = struct.unpack(f"<{len(data) // 2}H", data)
-        return [p / 65535.0 for p in pixels]
+    if mode.startswith("I"):
+        # Integer single-channel modes: "I;16"/"I;16L"/"I;16B" (16-bit) or
+        # plain "I" (32-bit — how Pillow loads many 16-bit PNGs). getdata()
+        # decodes each variant's width/endianness correctly; struct-unpacking
+        # raw bytes as shorts would double the pixel count for "I" images.
+        # Values are normalised as 16-bit and clamped.
+        return [min(1.0, p / 65535.0) for p in img.getdata()]
 
     # For multi-channel images, split and take the requested channel
     if mode == "RGB":
@@ -103,11 +104,11 @@ def convert_normal_to_dat(
     width, height = img.size
 
     # Extract R, G, B channels as 0..1 floats
-    if img.mode == "I;16":
-        # Single-channel 16-bit — treat as grayscale (unusual for normals)
+    if img.mode.startswith("I"):
+        # Single-channel integer mode — treat as grayscale (unusual for normals)
         ch_r = _read_channel_f(img, 0)
-        ch_g = ch_r[:]
-        ch_b = ch_r[:]
+        ch_g = ch_r
+        ch_b = ch_r
     else:
         img_rgb = img.convert("RGB")
         ch_r = _read_channel_f(img_rgb, 0)
@@ -199,11 +200,10 @@ def convert_roughness_to_dat(
     width, height = img.size
 
     # Read as grayscale 0..1
-    mode = img.mode
-    if mode in ("I;16", "I"):
-        data = img.tobytes()
-        pixels = struct.unpack(f"<{len(data) // 2}H", data)
-        channel = [p / 65535.0 for p in pixels]
+    if img.mode.startswith("I"):
+        # Integer modes decoded via getdata() — see _read_channel_f for why
+        # struct-unpacking raw bytes is wrong for 32-bit "I" images.
+        channel = _read_channel_f(img, 0)
     else:
         gray = img.convert("L")
         raw = gray.tobytes()

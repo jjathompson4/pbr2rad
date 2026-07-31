@@ -42,7 +42,9 @@ class ChannelMap(BaseModel):
 
 class PolyHavenConvertRequest(BaseModel):
     slug: str
-    resolution: Literal["1k", "2k", "4k", "8k"] = "1k"
+    # Policy: 1k default, 2k ceiling. Nothing above 2k is ever needed for
+    # Radiance materials, and larger fetches would swamp the small host.
+    resolution: Literal["1k", "2k"] = "1k"
     fmt: Literal["png", "jpg", "exr"] = "png"
     options: ConvertOptionsRequest = Field(default_factory=ConvertOptionsRequest)
 

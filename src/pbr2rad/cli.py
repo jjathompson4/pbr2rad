@@ -92,9 +92,9 @@ def _build_fetch_parser(
     p.add_argument("-o", "--output", type=Path, required=True, help="Output folder")
     p.add_argument(
         "--resolution",
-        choices=("1k", "2k", "4k", "8k"),
+        choices=("1k", "2k"),
         default="1k",
-        help="Texture resolution to download (default: 2k).",
+        help="Texture resolution to download (default: 1k, max: 2k).",
     )
     p.add_argument(
         "--format",
