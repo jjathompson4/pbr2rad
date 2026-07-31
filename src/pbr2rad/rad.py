@@ -9,9 +9,12 @@ PBR → Radiance mapping used here:
 * Roughness (mean, 0..1)       → Radiance roughness ≈ roughness²
                                  (perceptual → microfacet α)
 * Metalness (mean, 0..1)       → ``plastic`` below 0.5, ``metal`` at/above
-* Specular reflectance         → dielectric F0 ≈ 0.04 (plastic specularity
-                                 argument); for ``metal`` the specularity is
-                                 driven by the albedo itself, so we pass 1.
+* Specular reflectance         → 0.05 for plastic (slightly above the
+                                 textbook dielectric F0 of 0.04; chosen so
+                                 typical materials read with a visible
+                                 sheen in Radiance). For ``metal`` the
+                                 specularity is driven by the albedo
+                                 itself, so we pass 1.
 """
 
 from __future__ import annotations
@@ -47,8 +50,20 @@ class MaterialParams:
 
     @property
     def has_normal(self) -> bool:
-        """True if normal map data files are configured."""
-        return self.normal_dat_r is not None
+        """True if normal map data files are fully configured.
+
+        Requires all three .dat channels AND the .cal file — a partially
+        populated set would emit the literal string ``None`` into the .rad.
+        """
+        return all(
+            x is not None
+            for x in (
+                self.normal_dat_r,
+                self.normal_dat_g,
+                self.normal_dat_b,
+                self.normal_cal_file,
+            )
+        )
 
     @property
     def has_rough_map(self) -> bool:
@@ -109,7 +124,7 @@ def generate(params: MaterialParams) -> str:
     if params.has_normal:
         tex = f"{params.name}_tex"
         lines += [
-            f"# Normal map perturbation (texdata)",
+            "# Normal map perturbation (texdata)",
             f"{current_mod} texdata {tex}",
             (
                 f"9 dx_func dy_func dz_func "
@@ -125,7 +140,7 @@ def generate(params: MaterialParams) -> str:
     if params.has_rough_map:
         rough_id = f"{params.name}_rough"
         lines += [
-            f"# Spatially varying roughness (brightdata)",
+            "# Spatially varying roughness (brightdata)",
             f"{current_mod} brightdata {rough_id}",
             (
                 f"5 rough_func {params.rough_dat} "

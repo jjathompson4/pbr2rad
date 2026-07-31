@@ -145,6 +145,7 @@ def _make_response(
         download_url=f"/api/v1/download/{job_id}",
         preview_url=f"/api/v1/preview/{job_id}" if has_preview else None,
         channels_used=list(getattr(result, "channels_used", []) or []),
+        channels_estimated=list(getattr(result, "channels_estimated", []) or []),
     )
 
 

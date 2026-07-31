@@ -153,12 +153,12 @@ def convert_normal_to_dat(
     Returns ``(r_dat_name, g_dat_name, b_dat_name, width, height)``
     where ``*_dat_name`` is the bare filename (no directory).
     """
-    img = Image.open(src)
     # Flip vertically so DAT sample v=0 corresponds to the BOTTOM of the
     # source image — matching Radiance's bottom-origin picture coordinates
     # used by colorpict on the albedo HDR. Without this the normal-map
     # bumps land vertically inverted from the albedo pattern they describe.
-    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    with Image.open(src) as _raw:
+        img = _raw.transpose(Image.FLIP_TOP_BOTTOM)
     img = _resize_for_dat(img, max_size)
     width, height = img.size
 
@@ -211,9 +211,9 @@ def generate_normal_cal(
         "\n"
         "{ Each function receives (dx,dy,dz) = sampled R,G,B from .dat files }\n"
         "{ Convert from [0,1] data range to [-1,+1] normal range }\n"
-        f"dx_func(r,g,b) = A1 * (2*r - 1);\n"
+        "dx_func(r,g,b) = A1 * (2*r - 1);\n"
         f"dy_func(r,g,b) = A1 * {flip_y} * (2*g - 1);\n"
-        f"dz_func(r,g,b) = A1 * (2*b - 1 - 1);\n"
+        "dz_func(r,g,b) = A1 * (2*b - 1 - 1);\n"
     )
 
 
@@ -247,10 +247,10 @@ def convert_roughness_to_dat(
 
     Returns ``(dat_name, width, height)``.
     """
-    img = Image.open(src)
     # Vertical flip — see convert_normal_to_dat for rationale (DAT bottom-origin
     # alignment with the albedo HDR via colorpict).
-    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    with Image.open(src) as _raw:
+        img = _raw.transpose(Image.FLIP_TOP_BOTTOM)
     img = _resize_for_dat(img, max_size)
     width, height = img.size
 

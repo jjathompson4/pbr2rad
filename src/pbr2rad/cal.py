@@ -61,7 +61,13 @@ def planar(
     )
 
 
-def box(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
+def box(
+    *,
+    u_scale: float = 1.0,
+    v_scale: float = 1.0,
+    u_offset: float = 0.0,
+    v_offset: float = 0.0,
+) -> str:
     """Triplanar / box projection driven by the dominant normal axis.
 
     * |Nz| dominant → XY plane
@@ -72,20 +78,29 @@ def box(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
         _HEADER.format(mode="box / triplanar")
         + f"u_scale : {u_scale:g};\n"
         + f"v_scale : {v_scale:g};\n"
+        + f"u_offset : {u_offset:g};\n"
+        + f"v_offset : {v_offset:g};\n"
         + "abs_nx = abs(Nx);\n"
         + "abs_ny = abs(Ny);\n"
         + "abs_nz = abs(Nz);\n"
         + "nx_dom = if(abs_nx - abs_ny, if(abs_nx - abs_nz, 1, 0), 0);\n"
         + "nz_dom = if(abs_nz - abs_nx, if(abs_nz - abs_ny, 1, 0), 0);\n"
-        + "{ ny dominant is the remaining case }\n"
-        + "u_raw = if(nx_dom - 0.5, Py, if(nz_dom - 0.5, Px, Px));\n"
+        + "{ ny dominant is the remaining case; u source is Py only when }\n"
+        + "{ nx dominates - both nz-dominant and ny-dominant read Px }\n"
+        + "u_raw = if(nx_dom - 0.5, Py, Px);\n"
         + "v_raw = if(nx_dom - 0.5, Pz, if(nz_dom - 0.5, Py, Pz));\n"
-        + "u = mod(u_raw * u_scale, 1);\n"
-        + "v = mod(v_raw * v_scale, 1);\n"
+        + "u = mod(u_raw * u_scale + u_offset, 1);\n"
+        + "v = mod(v_raw * v_scale + v_offset, 1);\n"
     )
 
 
-def cylindrical(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
+def cylindrical(
+    *,
+    u_scale: float = 1.0,
+    v_scale: float = 1.0,
+    u_offset: float = 0.0,
+    v_offset: float = 0.0,
+) -> str:
     """Cylindrical projection wrapping around the Z axis.
 
     ``u`` maps the angle around Z (0..1 = full revolution).
@@ -95,13 +110,21 @@ def cylindrical(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
         _HEADER.format(mode="cylindrical (Z axis)")
         + f"u_scale : {u_scale:g};\n"
         + f"v_scale : {v_scale:g};\n"
+        + f"u_offset : {u_offset:g};\n"
+        + f"v_offset : {v_offset:g};\n"
         + "{ angle around Z axis, normalised to 0..1 }\n"
-        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale, 1);\n"
-        + "v = mod(Pz * v_scale, 1);\n"
+        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale + u_offset, 1);\n"
+        + "v = mod(Pz * v_scale + v_offset, 1);\n"
     )
 
 
-def spherical(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
+def spherical(
+    *,
+    u_scale: float = 1.0,
+    v_scale: float = 1.0,
+    u_offset: float = 0.0,
+    v_offset: float = 0.0,
+) -> str:
     """Spherical (equirectangular) projection.
 
     ``u`` maps longitude (angle around Z).
@@ -112,11 +135,15 @@ def spherical(*, u_scale: float = 1.0, v_scale: float = 1.0) -> str:
         _HEADER.format(mode="spherical (equirectangular)")
         + f"u_scale : {u_scale:g};\n"
         + f"v_scale : {v_scale:g};\n"
-        + "r = sqrt(Px*Px + Py*Py + Pz*Pz);\n"
+        + f"u_offset : {u_offset:g};\n"
+        + f"v_offset : {v_offset:g};\n"
+        + "{ guard r for the degenerate origin sample }\n"
+        + "rr = sqrt(Px*Px + Py*Py + Pz*Pz);\n"
+        + "r = if(rr - 1e-6, rr, 1e-6);\n"
         + "{ longitude: angle around Z axis }\n"
-        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale, 1);\n"
+        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale + u_offset, 1);\n"
         + "{ latitude: angle from equator, +0.5 so equator is at v=0.5 }\n"
-        + "v = mod(asin(Pz / r) / PI * v_scale + 0.5, 1);\n"
+        + "v = mod(asin(Pz / r) / PI * v_scale + 0.5 + v_offset, 1);\n"
     )
 
 
@@ -141,9 +168,18 @@ def generate(
             v_offset=v_offset,
         )
     if mode == "box":
-        return box(u_scale=u_scale, v_scale=v_scale)
+        return box(
+            u_scale=u_scale, v_scale=v_scale,
+            u_offset=u_offset, v_offset=v_offset,
+        )
     if mode == "cylindrical":
-        return cylindrical(u_scale=u_scale, v_scale=v_scale)
+        return cylindrical(
+            u_scale=u_scale, v_scale=v_scale,
+            u_offset=u_offset, v_offset=v_offset,
+        )
     if mode == "spherical":
-        return spherical(u_scale=u_scale, v_scale=v_scale)
+        return spherical(
+            u_scale=u_scale, v_scale=v_scale,
+            u_offset=u_offset, v_offset=v_offset,
+        )
     raise ValueError(f"unknown projection mode: {mode!r}")

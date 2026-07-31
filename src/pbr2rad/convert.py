@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+import os
+import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cal as cal_mod
@@ -64,20 +66,23 @@ class ConvertResult:
     # set but not in this list was ignored (e.g. ao, displacement, or maps
     # disabled via options).
     channels_used: list[str] = field(default_factory=list)
+    # Channels synthesized from the albedo because the source set lacked
+    # them ("normal", "roughness"). Never overlaps channels_used.
+    channels_estimated: list[str] = field(default_factory=list)
 
 
 def _apply_orientation(
     pbr: PBRSet,
-    out_dir: Path,
+    work_dir: Path,
     opts: ConvertOptions,
 ) -> PBRSet:
-    """Write rotated/flipped copies of every source map to ``out_dir`` and
+    """Write rotated/flipped copies of every source map to ``work_dir`` and
     return a new ``PBRSet`` pointing at those copies. Original ``pbr.maps``
     paths are left untouched."""
     from PIL import Image
 
-    xform_dir = out_dir / "_oriented"
-    xform_dir.mkdir(exist_ok=True)
+    xform_dir = work_dir / "oriented"
+    xform_dir.mkdir(parents=True, exist_ok=True)
 
     new_maps: dict[str, Path] = {}
     for channel, src in pbr.maps.items():
@@ -107,10 +112,10 @@ def _apply_orientation(
         img.save(dst)
         new_maps[channel] = dst
 
-    # Shallow copy with rewritten maps; keep name/root intact.
-    new_pbr = PBRSet(name=pbr.name, root=pbr.root)
-    new_pbr.maps = new_maps
-    return new_pbr
+    # Shallow copy with rewritten maps; keep name/root/extras intact.
+    return PBRSet(
+        name=pbr.name, root=pbr.root, maps=new_maps, extras=list(pbr.extras)
+    )
 
 
 def convert_set(
@@ -140,16 +145,43 @@ def convert_set(
     out_dir = Path(out_root) / pbr.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Work on a copy: estimation and orientation rewrite ``maps``, and
+    # mutating the caller's PBRSet makes retries and batch reuse silently
+    # consume a previous run's intermediates.
+    pbr = PBRSet(
+        name=pbr.name, root=pbr.root, maps=dict(pbr.maps), extras=list(pbr.extras)
+    )
+
+    # Intermediates (oriented copies, estimated maps) live in a scratch dir
+    # that never ships: leaving them in the output pollutes the material
+    # folder and — worse — re-running discover() on an output folder picks
+    # up ``*_est_nor_gl.png`` as a source normal map.
+    work_dir = out_dir / ".pbr2rad_work"
+    try:
+        return _convert_set_inner(pbr, out_dir, work_dir, opts)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _convert_set_inner(
+    pbr: PBRSet,
+    out_dir: Path,
+    work_dir: Path,
+    opts: ConvertOptions,
+) -> ConvertResult:
     # Apply per-map rotation + global flip overrides before any processing.
     # Pixel-level only — does not remap normal-vector channel values.
     if opts.rotate_per_map or opts.flip_h or opts.flip_v:
-        pbr = _apply_orientation(pbr, out_dir, opts)
+        pbr = _apply_orientation(pbr, work_dir, opts)
 
     hdr_file = out_dir / f"{pbr.name}.hdr"
     cal_file = out_dir / f"{pbr.name}.cal"
     rad_file = out_dir / f"{pbr.name}.rad"
 
     channels_used: list[str] = []
+    channels_estimated: list[str] = []
+    had_normal = pbr.normal is not None
+    had_rough = pbr.roughness is not None
 
     # 1. Metalness picks plastic vs metal; both drive the specular term we
     #    must reserve texture headroom for, so determine it first.
@@ -188,14 +220,16 @@ def convert_set(
     )
     cal_file.write_text(cal_text, encoding="ascii")
 
-    # 3b. Estimate missing maps from albedo (if enabled)
+    # 3b. Estimate missing maps from albedo (if enabled). Estimated PNGs are
+    # scratch files — consumed by the .dat converters below, never shipped.
     if opts.estimate_maps:
+        work_dir.mkdir(parents=True, exist_ok=True)
         if pbr.normal is None and opts.normal:
-            est_normal = out_dir / f"{pbr.name}_est_nor_gl.png"
+            est_normal = work_dir / f"{pbr.name}_est_nor_gl.png"
             estimate_mod.estimate_normal(pbr.albedo, est_normal, strength=opts.bump_scale)
             pbr.maps["normal_gl"] = est_normal
         if pbr.roughness is None and opts.varying_roughness:
-            est_rough = out_dir / f"{pbr.name}_est_rough.png"
+            est_rough = work_dir / f"{pbr.name}_est_rough.png"
             estimate_mod.estimate_roughness(pbr.albedo, est_rough)
             pbr.maps["roughness"] = est_rough
 
@@ -204,10 +238,14 @@ def convert_set(
         roughness = opts.roughness_override
     elif pbr.roughness is not None:
         roughness = hdr_mod.average_gray(pbr.roughness)
-        # Mark roughness as used (for the scalar average). The varying-
-        # roughness path below may also use it — channels_used is a set
-        # semantically, so we de-duplicate at the end.
-        channels_used.append("roughness")
+        # Mark roughness as source-used only if the set actually shipped a
+        # roughness map; a synthesized one is reported as estimated instead.
+        # The varying-roughness path below consumes the same map —
+        # channels_used is a set semantically, so we de-duplicate at the end.
+        if had_rough:
+            channels_used.append("roughness")
+        else:
+            channels_estimated.append("roughness")
     else:
         roughness = 0.5
 
@@ -216,7 +254,10 @@ def convert_set(
     if opts.normal and pbr.normal is not None:
         convention = normal_mod.detect_convention(pbr.maps)
         is_dx = convention == "dx"
-        channels_used.append("normal")
+        if had_normal:
+            channels_used.append("normal")
+        else:
+            channels_estimated.append("normal")
 
         dat_r, dat_g, dat_b, _nw, _nh = normal_mod.convert_normal_to_dat(
             pbr.normal, out_dir, pbr.name, max_size=opts.dat_resolution,
@@ -271,6 +312,10 @@ def convert_set(
     # De-duplicate channels_used while preserving insertion order.
     seen: set[str] = set()
     channels_used = [c for c in channels_used if not (c in seen or seen.add(c))]
+    seen.clear()
+    channels_estimated = [
+        c for c in channels_estimated if not (c in seen or seen.add(c))
+    ]
 
     return ConvertResult(
         name=pbr.name,
@@ -285,6 +330,7 @@ def convert_set(
         metalness=metalness,
         primitive=mat.as_primitive(),
         channels_used=channels_used,
+        channels_estimated=channels_estimated,
     )
 
 
@@ -293,15 +339,23 @@ def write_manifest(results: list[ConvertResult], out_root: Path) -> Path:
     manifest_path = Path(out_root) / "manifest.json"
     entries = []
     for r in results:
+        # os.path.relpath instead of Path.relative_to: tolerant of mixed
+        # relative/absolute inputs and macOS /tmp vs /private/tmp aliasing.
+        def _rel(p: Path) -> str:
+            return Path(os.path.relpath(p, out_root)).as_posix()
+
         entries.append({
             "name": r.name,
             "primitive": r.primitive,
             "files": {
-                "rad": r.rad_file.relative_to(out_root).as_posix(),
-                "cal": r.cal_file.relative_to(out_root).as_posix(),
-                "hdr": r.hdr_file.relative_to(out_root).as_posix(),
+                "rad": _rel(r.rad_file),
+                "cal": _rel(r.cal_file),
+                "hdr": _rel(r.hdr_file),
             },
             "resolution": [r.width, r.height],
+            # Mean linear RGB of the SOURCE albedo (pre energy-conservation
+            # scaling — the shipped .hdr is pre-multiplied by 1-spec for
+            # plastics; see convert_set).
             "avg_linear_rgb": [round(c, 4) for c in r.avg_rgb],
             "roughness": round(r.roughness, 4),
             "metalness": round(r.metalness, 4),
@@ -313,7 +367,3 @@ def write_manifest(results: list[ConvertResult], out_root: Path) -> Path:
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest_path
-
-
-# Silence unused-import warning for asdict; kept for future callers.
-_ = asdict

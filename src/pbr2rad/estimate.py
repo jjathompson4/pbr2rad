@@ -42,7 +42,8 @@ def estimate_normal(
 
     Returns the output path.
     """
-    img = Image.open(albedo_path).convert("L")
+    with Image.open(albedo_path) as _raw:
+        img = _raw.convert("L")
     width, height = img.size
 
     # Enhance local contrast before Sobel to make subtle features visible.
@@ -95,8 +96,11 @@ def estimate_normal(
     nz = 1.0 / length
 
     def _to_byte(v: np.ndarray) -> np.ndarray:
-        # int() truncation + clamp, exactly as the original per-pixel code.
-        return np.clip(((v * 0.5 + 0.5) * 255).astype(np.int64), 0, 255)
+        # Round-half-up + clamp. (Truncation would bias every channel half a
+        # level low — a flat normal must encode as the canonical 128.)
+        return np.clip(
+            np.floor((v * 0.5 + 0.5) * 255 + 0.5).astype(np.int64), 0, 255
+        )
 
     rgb = np.stack([_to_byte(nx), _to_byte(ny), _to_byte(nz)], axis=-1)
     out = Image.frombytes("RGB", (width, height), rgb.astype(np.uint8).tobytes())
@@ -127,7 +131,8 @@ def estimate_roughness(
 
     Returns the output path.
     """
-    img = Image.open(albedo_path).convert("L")
+    with Image.open(albedo_path) as _raw:
+        img = _raw.convert("L")
     width, height = img.size
 
     # Two-pass approach for better roughness estimation:
@@ -156,7 +161,7 @@ def estimate_roughness(
     mean_data = _to_f(mean_img) / 255.0
     pixels = _to_f(img) / 255.0
 
-    sq_bytes = np.clip((pixels * pixels * 255).astype(np.int64), 0, 255)
+    sq_bytes = np.clip(np.floor(pixels * pixels * 255 + 0.5).astype(np.int64), 0, 255)
     sq_img = Image.frombytes(
         "L", (width, height), sq_bytes.astype(np.uint8).tobytes(),
     )
@@ -178,7 +183,7 @@ def estimate_roughness(
     combined = 0.6 * (edge_mag / max_edge) + 0.4 * (variance / max_var)
     # Remap with floor and ceiling
     rough = 0.15 + combined * 0.75
-    rough_bytes = np.clip((rough * 255).astype(np.int64), 0, 255)
+    rough_bytes = np.clip(np.floor(rough * 255 + 0.5).astype(np.int64), 0, 255)
 
     out = Image.frombytes("L", (width, height), rough_bytes.astype(np.uint8).tobytes())
     # Moderate smoothing to clean up noise while preserving edges

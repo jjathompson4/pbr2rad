@@ -33,8 +33,26 @@ def test_cli_converts_library(tmp_path: Path, capsys) -> None:
 
 
 def test_cli_missing_input(tmp_path: Path) -> None:
+    # Runtime failures return 1; exit code 2 is reserved for argparse
+    # usage errors so callers can distinguish the two.
     rc = main([str(tmp_path / "nope"), "-o", str(tmp_path / "out")])
-    assert rc == 2
+    assert rc == 1
+
+
+def test_cli_input_is_file(tmp_path: Path) -> None:
+    f = tmp_path / "not_a_dir.png"
+    f.write_bytes(b"x")
+    rc = main([str(f), "-o", str(tmp_path / "out")])
+    assert rc == 1
+
+
+def test_cli_version(capsys) -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert "pbr2rad" in capsys.readouterr().out
 
 
 def test_cli_empty_input(tmp_path: Path) -> None:

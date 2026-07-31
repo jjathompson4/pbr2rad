@@ -65,3 +65,33 @@ def test_discover_many_parent_folder(tmp_path: Path) -> None:
     sets = discover_many(tmp_path)
     names = sorted(s.name for s in sets)
     assert names == ["a", "b"]
+
+
+class TestClassifierAnchoring:
+    """Trailing-segment anchoring: channel words in the base name must not
+    outrank the true specifier at the end of the filename."""
+
+    def test_metal_in_basename_still_albedo(self, tmp_path):
+        from pbr2rad.discover import discover
+
+        (tmp_path / "plate_metal_diff_2k.png").write_bytes(b"x")
+        (tmp_path / "plate_metal_rough_2k.png").write_bytes(b"x")
+        pbr = discover(tmp_path)
+        assert pbr.albedo is not None and pbr.albedo.name == "plate_metal_diff_2k.png"
+        assert pbr.roughness is not None
+        assert "metalness" not in pbr.maps
+
+    def test_joined_pair_beats_trailing(self, tmp_path):
+        from pbr2rad.discover import discover
+
+        (tmp_path / "brick_nor_gl_2k.png").write_bytes(b"x")
+        pbr = discover(tmp_path)
+        assert "normal_gl" in pbr.maps
+
+    def test_untagged_master_beats_tagged_variant(self, tmp_path):
+        from pbr2rad.discover import discover
+
+        (tmp_path / "wood_diff_1k.png").write_bytes(b"x")
+        (tmp_path / "wood_diff.png").write_bytes(b"x")
+        pbr = discover(tmp_path)
+        assert pbr.albedo.name == "wood_diff.png"

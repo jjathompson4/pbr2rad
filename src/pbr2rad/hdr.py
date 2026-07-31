@@ -220,7 +220,8 @@ def convert_ldr_to_hdr(
     term (see ``convert.convert_set``).
     Returns ``(width, height)``.
     """
-    img = Image.open(src).convert("RGB")
+    with Image.open(src) as raw:
+        img = _demote_16bit(raw).convert("RGB")
     width, height = img.size
     data = np.frombuffer(img.tobytes(), dtype=np.uint8)  # row-major RGB bytes
 
@@ -233,9 +234,22 @@ def convert_ldr_to_hdr(
     return width, height
 
 
+def _demote_16bit(img: Image.Image) -> Image.Image:
+    """Scale integer-mode (16/32-bit) images down to 8-bit grayscale.
+
+    Pillow's ``convert("RGB")`` on an "I" image CLIPS values above 255 to
+    white; a 16-bit PNG albedo would come out blown out. Divide down first.
+    """
+    if not img.mode.startswith("I"):
+        return img
+    arr = np.clip(np.asarray(img, dtype=np.int64) // 256, 0, 255)
+    return Image.fromarray(arr.astype(np.uint8), "L")
+
+
 def average_rgb(src: Path, *, srgb: bool = True) -> tuple[float, float, float]:
     """Compute mean linear RGB of an image (for manifest / reflectance)."""
-    img = Image.open(src).convert("RGB")
+    with Image.open(src) as raw:
+        img = _demote_16bit(raw).convert("RGB")
     data = np.frombuffer(img.tobytes(), dtype=np.uint8).reshape(-1, 3)
     if data.shape[0] == 0:
         return (0.0, 0.0, 0.0)
@@ -250,7 +264,8 @@ def average_gray(src: Path) -> float:
 
     Handles both 8-bit and 16-bit images correctly.
     """
-    img = Image.open(src)
+    with Image.open(src) as raw:
+        img = raw.copy()
     mode = img.mode
 
     if mode.startswith("I"):

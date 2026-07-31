@@ -57,6 +57,11 @@ def _make_limiter(max_requests: int):
             for k in stale:
                 hits.pop(k, None)
 
+    def reset() -> None:
+        """Clear all counters (test isolation hook)."""
+        hits.clear()
+
+    dependency.reset = reset  # type: ignore[attr-defined]
     return dependency
 
 

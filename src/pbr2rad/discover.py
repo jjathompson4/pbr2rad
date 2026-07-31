@@ -9,8 +9,11 @@ keyword fallback.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_SEG_RE = re.compile(r"[_\-. ]+")
 
 # Ordered list of (channel, keyword tokens). Tokens are matched against
 # underscore/dash/dot-separated FILENAME SEGMENTS, not as bare substrings —
@@ -73,8 +76,7 @@ def _suffix_segments(filename: str) -> list[str]:
     they often contain channel-like words (e.g. ``box_profile_metal_sheet``
     has ``metal`` in its name but is not a metal texture).
     """
-    import re
-    parts = [s for s in re.split(r"[_\-. ]+", filename.lower()) if s]
+    parts = [s for s in _SEG_RE.split(filename.lower()) if s]
     # Drop trailing extension
     while parts and parts[-1] in _EXT_TAGS:
         parts.pop()
@@ -88,14 +90,27 @@ def _suffix_segments(filename: str) -> list[str]:
 
 def _classify(filename: str) -> str | None:
     suffix = _suffix_segments(filename)
-    # Build matchable tokens: each segment individually, plus the joined pair
-    # (so "nor_gl" → ["nor", "gl", "norgl"] all match).
-    matchable = set(suffix)
+    if not suffix:
+        return None
+    # Match in order of anchoring confidence:
+    # 1. The joined pair ("nor" + "gl" → "norgl") — most specific.
+    # 2. The TRAILING segment alone — the true channel specifier position.
+    # 3. The earlier segment — only as a last resort.
+    # Checking the trailing segment before the earlier one matters: in
+    # "plate_metal_diff_2k.png" the last-2 window is ["metal", "diff"], and
+    # pattern-priority matching over the whole set would classify it as
+    # metalness, silently costing the set its albedo.
     if len(suffix) == 2:
-        matchable.add(suffix[0] + suffix[1])
+        joined = suffix[0] + suffix[1]
+        for channel, tokens in _PATTERNS:
+            if joined in tokens:
+                return channel
     for channel, tokens in _PATTERNS:
-        for tok in tokens:
-            if tok in matchable:
+        if suffix[-1] in tokens:
+            return channel
+    if len(suffix) == 2:
+        for channel, tokens in _PATTERNS:
+            if suffix[0] in tokens:
                 return channel
     return None
 
@@ -124,7 +139,9 @@ def discover(folder: Path, name: str | None = None) -> PBRSet:
         for i, tag in enumerate(("_1k", "_2k", "_4k", "_8k", "_16k")):
             if tag in lower:
                 return i
-        return -1
+        # Untagged files are usually the full-resolution master — rank them
+        # above every tagged variant rather than below _1k.
+        return 5
 
     # Group by channel, keep the highest-resolution variant.
     best: dict[str, tuple[int, Path]] = {}

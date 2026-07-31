@@ -77,10 +77,13 @@ class ConvertResponse(BaseModel):
     resolution: list[int]
     download_url: str
     preview_url: str | None = None
-    # PBR channels actually consumed during conversion (subset of:
+    # Source PBR channels actually consumed during conversion (subset of:
     # "albedo", "normal", "roughness", "metalness"). The UI uses this
     # to indicate which input maps fed the Radiance material.
     channels_used: list[str] = []
+    # Channels synthesized from the albedo ("normal", "roughness") because
+    # the source set didn't include them.
+    channels_estimated: list[str] = []
 
 
 class HealthResponse(BaseModel):
