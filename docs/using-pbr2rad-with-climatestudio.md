@@ -139,22 +139,25 @@ dialog to display, so it displays nothing (or a misleading white).
 The raw-text panel in the dialog is the reliable view: the header
 comments state the primitive, metalness, and roughness.
 
-### Re-test checklist (next CS session)
+### Confirmed behavior (tested 2026-07, CS custom library on Windows)
 
-Load a freshly generated material folder as a CS custom library and
-record, per material:
+Observed with a 9-material pbr2rad library (`Desktop\Rad-Mat-Tests`):
 
-1. Does the material appear in the table at all when its `.rad` sits in
-   a **subfolder** of the library directory? If not, copy the folder's
-   *contents* (`.rad` + `.cal`/`.dat`/`.hdr`) flat into the library dir
-   and reload — CS's docs describe a flat directory of `.rad` files.
-2. Do the parameter columns populate, and with what values?
-3. Does a preview sphere render? (Per the quote above: expected NO for
-   the textured chain.)
-4. Do the pattern primitives (`*_pat`, `*_tex`, `*_rough`) show up as
-   separate junk rows in the table?
-5. Confirm the assigned material still renders correctly in an actual
-   simulation/rendering.
+| Aspect | Result |
+|---|---|
+| Materials listed | ✅ All appear, one row each, Type "Radiance plastic" |
+| Junk rows | ✅ None — `*_pat`/`*_tex`/`*_rough` are correctly folded in |
+| Raw text panel | ✅ Shows the full chain |
+| Roughness column | ✅ Real values — but note it is the *Radiance* α (perceptual², e.g. 0.79 perceptual shows as 0.62) |
+| Preview sphere | ❌ Blank (the documented CS limitation above) |
+| VLR columns | ❌ **Every material reads VLR(tot) 100% / diff 95% / spec 5%** |
+
+The VLR row is the meaningful defect: CS derives reflectance from the
+material line's RGB, which pbr2rad deliberately sets to `1 1 1` (the
+real color is in the `.hdr` pattern). The dialog therefore reports a
+physically wrong 100% reflectance for every textured material. The
+materials still *simulate/render* with the correct textured
+reflectances — only the dialog's summary is wrong.
 
 ### Candidate fix — NOT YET IMPLEMENTED
 
