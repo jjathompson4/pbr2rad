@@ -117,7 +117,64 @@ below). This is much faster to iterate on than running CS simulations.
 
 ---
 
-## Caveats
+## What the custom-material import dialog shows (and doesn't)
+
+Observed in practice (mid-2026, CS custom material import per
+https://docs.solemma.com/custom-material): pbr2rad materials **render
+correctly** in ClimateStudio once assigned, but the import dialog itself
+can look broken — blank or missing parameter values, no preview sphere,
+and possibly extra rows or missing entries. This is expected, not a
+defect in the generated files:
+
+> "A rendered preview is currently supported only for plastic, metal,
+> or glass materials **without texture modifiers**." — Solemma docs
+
+A pbr2rad material is exactly the thing that limitation excludes: a
+`plastic`/`metal` at the end of a `colorpict → texdata → brightdata`
+texture chain. Its material line is deliberately `5 1 1 1 <spec>
+<rough>` — the *color* lives in the `.hdr` texture (pre-scaled for
+energy conservation) and the *varying roughness* lives in a `.dat`
+file. There is no single reflectance number in the `.rad` for CS's
+dialog to display, so it displays nothing (or a misleading white).
+The raw-text panel in the dialog is the reliable view: the header
+comments state the primitive, metalness, and roughness.
+
+### Re-test checklist (next CS session)
+
+Load a freshly generated material folder as a CS custom library and
+record, per material:
+
+1. Does the material appear in the table at all when its `.rad` sits in
+   a **subfolder** of the library directory? If not, copy the folder's
+   *contents* (`.rad` + `.cal`/`.dat`/`.hdr`) flat into the library dir
+   and reload — CS's docs describe a flat directory of `.rad` files.
+2. Do the parameter columns populate, and with what values?
+3. Does a preview sphere render? (Per the quote above: expected NO for
+   the textured chain.)
+4. Do the pattern primitives (`*_pat`, `*_tex`, `*_rough`) show up as
+   separate junk rows in the table?
+5. Confirm the assigned material still renders correctly in an actual
+   simulation/rendering.
+
+### Candidate fix — NOT YET IMPLEMENTED
+
+If the re-test confirms the dialog problems, the plan is to have
+pbr2rad additionally emit an **untextured summary twin** per material:
+
+```
+void plastic <name>_avg
+0
+0
+5 <R> <G> <B> 0.05 <rough²>
+```
+
+with `R G B` = the manifest's `avg_linear_rgb` × the same
+energy-conservation scale applied to the `.hdr` (0.95 for plastics),
+and a `metal` variant using the unscaled average. CS can fully parse
+and preview that twin, giving the dialog sensible numbers and a
+thumbnail, while the real textured chain remains the material you
+actually assign for simulations. Holding off on implementing until the
+checklist above confirms which behaviors are real.
 
 ### Texture scale is tied to model units
 
