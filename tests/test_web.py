@@ -55,6 +55,39 @@ def test_health(client):
 
 
 # ---------------------------------------------------------------------------
+# Canonical-host redirect (*.fly.dev bypasses Cloudflare)
+# ---------------------------------------------------------------------------
+
+def test_fly_dev_host_redirects_to_canonical(client):
+    resp = client.get(
+        "/some/path?q=1",
+        headers={"host": "pbr2rad.fly.dev"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "https://pbr2rad.com/some/path?q=1"
+
+
+def test_fly_dev_host_health_check_still_served(client):
+    resp = client.get(
+        "/api/v1/health",
+        headers={"host": "pbr2rad.fly.dev"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+def test_canonical_host_not_redirected(client):
+    resp = client.get(
+        "/api/v1/health",
+        headers={"host": "pbr2rad.com"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Discover
 # ---------------------------------------------------------------------------
 

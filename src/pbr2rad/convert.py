@@ -29,6 +29,11 @@ class ConvertOptions:
     varying_roughness: bool = True   # use roughness map for brightdata if discovered
     rough_modulation: float = 0.8    # how strongly roughness affects specular
     estimate_maps: bool = True       # estimate missing normal/roughness from albedo
+    # Cap the longest edge of normal/roughness .dat emission (None = native).
+    # .dat files are ASCII and Radiance parses them at render time; detail
+    # above ~512px is visually indistinguishable for perturbation data while
+    # costing 16x the text per doubling.
+    dat_resolution: int | None = None
 
     # Per-map rotation overrides (CCW degrees: 0, 90, 180, 270), keyed by
     # discover channel name ("albedo", "normal_gl", "normal_dx", "roughness",
@@ -87,8 +92,18 @@ def _apply_orientation(
         if opts.flip_v:
             img = img.transpose(Image.FLIP_TOP_BOTTOM)
         if rot:
-            img = img.rotate(rot, expand=True)  # PIL rotate is CCW
-        dst = xform_dir / src.name
+            # Exact 90-degree steps are pure memory shuffles (CCW, matching
+            # PIL rotate); anything else falls back to the affine rotate.
+            transpose = {
+                90: Image.ROTATE_90, 180: Image.ROTATE_180, 270: Image.ROTATE_270,
+            }.get(rot % 360)
+            if transpose is not None:
+                img = img.transpose(transpose)
+            else:
+                img = img.rotate(rot, expand=True)  # PIL rotate is CCW
+        # Always re-encode as PNG: saving through the source suffix would
+        # lossily re-encode JPEG data maps on every conversion.
+        dst = xform_dir / f"{src.stem}.png"
         img.save(dst)
         new_maps[channel] = dst
 
@@ -204,7 +219,7 @@ def convert_set(
         channels_used.append("normal")
 
         dat_r, dat_g, dat_b, _nw, _nh = normal_mod.convert_normal_to_dat(
-            pbr.normal, out_dir, pbr.name,
+            pbr.normal, out_dir, pbr.name, max_size=opts.dat_resolution,
         )
         normal_cal_name = f"{pbr.name}_normal.cal"
         # The normal .cal must include projection definitions (u, v)
@@ -229,7 +244,7 @@ def convert_set(
         # Roughness already in channels_used from the scalar-average step;
         # the varying-roughness path consumes the same source map.
         rough_dat, _rw, _rh = normal_mod.convert_roughness_to_dat(
-            pbr.roughness, out_dir, pbr.name,
+            pbr.roughness, out_dir, pbr.name, max_size=opts.dat_resolution,
         )
         rough_cal_name = f"{pbr.name}_rough.cal"
         # Roughness .cal needs projection definitions (u, v) just like normal .cal

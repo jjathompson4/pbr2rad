@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Rad-stuff" }]
 dependencies = [
     "Pillow>=10.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

@@ -11,7 +11,62 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
+
+# Precomputed "%.3f" strings for integer channel values (keyed by denominator:
+# 255 for 8-bit sources, 65535 for 16-bit). Turns millions of float formats
+# into array indexing. f"{v/denom:.3f}" == _flut(denom)[v] by construction.
+_F_LUTS: dict[int, np.ndarray] = {}
+
+
+def _flut(denom: int) -> np.ndarray:
+    lut = _F_LUTS.get(denom)
+    if lut is None:
+        lut = np.array([f"{i / denom:.3f}" for i in range(denom + 1)], dtype=object)
+        _F_LUTS[denom] = lut
+    return lut
+
+
+def _write_dat_2d_ints(path: Path, arr: np.ndarray, denom: int) -> None:
+    """Write a 2D ``.dat`` from integer channel values (0..denom).
+
+    ``arr`` is (height, width) in scanline order. Produces byte-identical
+    output to ``write_dat_2d`` fed the equivalent ``v/denom`` floats: same
+    header, same column-major layout, same "%.3f" formatting.
+    """
+    h, w = arr.shape
+    cols = _flut(denom)[arr.T]  # (width, height) of preformatted strings
+    with open(path, "w", encoding="ascii", newline="") as f:
+        f.write(f"2\n0\t1\t{w}\n0\t1\t{h}\n")
+        for col in cols:
+            f.write("\t".join(col))
+            f.write("\n")
+
+
+def _int_channels(img: Image.Image) -> tuple[tuple[np.ndarray, ...], int]:
+    """Decode an image into per-channel integer arrays + their denominator."""
+    if img.mode.startswith("I"):
+        # Integer single-channel modes (see _read_channel_f) — grayscale.
+        arr = np.clip(np.asarray(img, dtype=np.int64), 0, 65535)
+        return (arr,), 65535
+    rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    return (rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]), 255
+
+
+def _resize_for_dat(img: Image.Image, max_size: int | None) -> Image.Image:
+    """Cap the longest edge for .dat emission (normal/roughness detail is
+    visually indistinguishable well below albedo resolution, and .dat files
+    are ASCII — 16× less text at half resolution)."""
+    if not max_size or max(img.size) <= max_size:
+        return img
+    w, h = img.size
+    s = max_size / max(w, h)
+    if img.mode.startswith("I") and img.mode != "I":
+        img = img.convert("I")  # I;16 resize support is spotty
+    return img.resize(
+        (max(1, round(w * s)), max(1, round(h * s))), Image.BILINEAR
+    )
 
 
 def _read_channel_f(img: Image.Image, channel: int) -> list[float]:
@@ -89,9 +144,12 @@ def convert_normal_to_dat(
     src: Path,
     out_dir: Path,
     name: str,
+    *,
+    max_size: int | None = None,
 ) -> tuple[str, str, str, int, int]:
     """Convert a normal map PNG into three Radiance ``.dat`` files.
 
+    ``max_size`` caps the longest edge before emission (None = native).
     Returns ``(r_dat_name, g_dat_name, b_dat_name, width, height)``
     where ``*_dat_name`` is the bare filename (no directory).
     """
@@ -101,28 +159,21 @@ def convert_normal_to_dat(
     # used by colorpict on the albedo HDR. Without this the normal-map
     # bumps land vertically inverted from the albedo pattern they describe.
     img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    img = _resize_for_dat(img, max_size)
     width, height = img.size
 
-    # Extract R, G, B channels as 0..1 floats
-    if img.mode.startswith("I"):
-        # Single-channel integer mode — treat as grayscale (unusual for normals)
-        ch_r = _read_channel_f(img, 0)
-        ch_g = ch_r
-        ch_b = ch_r
-    else:
-        img_rgb = img.convert("RGB")
-        ch_r = _read_channel_f(img_rgb, 0)
-        ch_g = _read_channel_f(img_rgb, 1)
-        ch_b = _read_channel_f(img_rgb, 2)
+    channels, denom = _int_channels(img)
+    if len(channels) == 1:
+        # Single-channel source — grayscale in all three (unusual for normals)
+        channels = (channels[0], channels[0], channels[0])
 
     r_name = f"{name}_nor_r.dat"
     g_name = f"{name}_nor_g.dat"
     b_name = f"{name}_nor_b.dat"
 
     out_dir = Path(out_dir)
-    write_dat_2d(out_dir / r_name, ch_r, width, height)
-    write_dat_2d(out_dir / g_name, ch_g, width, height)
-    write_dat_2d(out_dir / b_name, ch_b, width, height)
+    for dat_name, ch in zip((r_name, g_name, b_name), channels):
+        _write_dat_2d_ints(out_dir / dat_name, ch, denom)
 
     return r_name, g_name, b_name, width, height
 
@@ -185,11 +236,14 @@ def convert_roughness_to_dat(
     src: Path,
     out_dir: Path,
     name: str,
+    *,
+    max_size: int | None = None,
 ) -> tuple[str, int, int]:
     """Convert a roughness map PNG into a single Radiance ``.dat`` file.
 
     The roughness map is single-channel (grayscale).  Values are stored
     as 0..1 floats in the ``.dat`` file.
+    ``max_size`` caps the longest edge before emission (None = native).
 
     Returns ``(dat_name, width, height)``.
     """
@@ -197,20 +251,20 @@ def convert_roughness_to_dat(
     # Vertical flip — see convert_normal_to_dat for rationale (DAT bottom-origin
     # alignment with the albedo HDR via colorpict).
     img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    img = _resize_for_dat(img, max_size)
     width, height = img.size
 
-    # Read as grayscale 0..1
     if img.mode.startswith("I"):
-        # Integer modes decoded via getdata() — see _read_channel_f for why
-        # struct-unpacking raw bytes is wrong for 32-bit "I" images.
-        channel = _read_channel_f(img, 0)
+        arr = np.clip(np.asarray(img, dtype=np.int64), 0, 65535)
+        denom = 65535
     else:
-        gray = img.convert("L")
-        raw = gray.tobytes()
-        channel = [b / 255.0 for b in raw]
+        arr = np.frombuffer(img.convert("L").tobytes(), dtype=np.uint8).reshape(
+            height, width
+        )
+        denom = 255
 
     dat_name = f"{name}_rough.dat"
-    write_dat_2d(Path(out_dir) / dat_name, channel, width, height)
+    _write_dat_2d_ints(Path(out_dir) / dat_name, arr, denom)
     return dat_name, width, height
 
 

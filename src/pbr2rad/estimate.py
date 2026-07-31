@@ -14,9 +14,9 @@ Uses only Pillow — no additional dependencies.
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageFilter
 
 
@@ -48,63 +48,58 @@ def estimate_normal(
     # Enhance local contrast before Sobel to make subtle features visible.
     # Use CLAHE-like approach: apply a local equalization via unsharp mask.
     sharpened = img.filter(ImageFilter.UnsharpMask(radius=10, percent=200, threshold=0))
-    gray = sharpened.tobytes()
+    gray = (
+        np.frombuffer(sharpened.tobytes(), dtype=np.uint8)
+        .reshape(height, width)
+        .astype(np.float64)
+        / 255.0
+    )
 
-    def px(x: int, y: int) -> float:
-        """Get pixel value as 0..1 float, clamped to image bounds."""
-        x = max(0, min(width - 1, x))
-        y = max(0, min(height - 1, y))
-        return gray[y * width + x] / 255.0
+    # Sobel gradients with clamped (edge-replicated) borders. The summation
+    # order below mirrors the original per-pixel expressions term for term so
+    # the float results are bit-identical to the old Python loop.
+    p = np.pad(gray, 1, mode="edge")
+    tl = p[0:-2, 0:-2]; tm = p[0:-2, 1:-1]; tr = p[0:-2, 2:]
+    ml = p[1:-1, 0:-2];                     mr = p[1:-1, 2:]
+    bl = p[2:,   0:-2]; bm = p[2:,   1:-1]; br = p[2:,   2:]
 
-    # Compute Sobel gradients and find max magnitude for auto-scaling
-    gradients = []
-    for y in range(height):
-        for x in range(width):
-            gx = (
-                -1 * px(x - 1, y - 1) + 1 * px(x + 1, y - 1)
-                + -2 * px(x - 1, y)     + 2 * px(x + 1, y)
-                + -1 * px(x - 1, y + 1) + 1 * px(x + 1, y + 1)
-            )
-            gy = (
-                -1 * px(x - 1, y - 1) + -2 * px(x, y - 1) + -1 * px(x + 1, y - 1)
-                + 1 * px(x - 1, y + 1) + 2 * px(x, y + 1) + 1 * px(x + 1, y + 1)
-            )
-            gradients.append((gx, gy))
+    gx = -1 * tl + 1 * tr
+    gx = gx + -2 * ml
+    gx = gx + 2 * mr
+    gx = gx + -1 * bl
+    gx = gx + 1 * br
+
+    gy = -1 * tl + -2 * tm
+    gy = gy + -1 * tr
+    gy = gy + 1 * bl
+    gy = gy + 2 * bm
+    gy = gy + 1 * br
 
     # Auto-scale: normalize gradients so the strongest edges produce
     # a visible deflection.  This handles low-contrast images like
     # dark tiles with subtle grout lines.
-    max_mag = max(
-        math.sqrt(gx * gx + gy * gy) for gx, gy in gradients
-    )
+    max_mag = float(np.sqrt(gx * gx + gy * gy).max())
     if max_mag < 1e-6:
         max_mag = 1.0
     # Scale so max gradient → ~0.7 deflection (strong but not extreme),
     # then apply user strength on top.
     auto_scale = 0.7 / max_mag
 
-    normal_data = bytearray(width * height * 3)
-    for i, (gx, gy) in enumerate(gradients):
-        # Normal vector (OpenGL convention: Y up)
-        s = auto_scale * strength
-        nx = -gx * s
-        ny = -gy * s
-        nz = 1.0
+    # Normal vector (OpenGL convention: Y up), normalized, remapped to bytes.
+    s = auto_scale * strength
+    nx = -gx * s
+    ny = -gy * s
+    length = np.sqrt(nx * nx + ny * ny + 1.0)  # nz = 1.0
+    nx = nx / length
+    ny = ny / length
+    nz = 1.0 / length
 
-        # Normalize
-        length = math.sqrt(nx * nx + ny * ny + nz * nz)
-        if length > 0:
-            nx /= length
-            ny /= length
-            nz /= length
+    def _to_byte(v: np.ndarray) -> np.ndarray:
+        # int() truncation + clamp, exactly as the original per-pixel code.
+        return np.clip(((v * 0.5 + 0.5) * 255).astype(np.int64), 0, 255)
 
-        # Remap [-1,+1] → [0,255]
-        idx = i * 3
-        normal_data[idx] = max(0, min(255, int((nx * 0.5 + 0.5) * 255)))
-        normal_data[idx + 1] = max(0, min(255, int((ny * 0.5 + 0.5) * 255)))
-        normal_data[idx + 2] = max(0, min(255, int((nz * 0.5 + 0.5) * 255)))
-
-    out = Image.frombytes("RGB", (width, height), bytes(normal_data))
+    rgb = np.stack([_to_byte(nx), _to_byte(ny), _to_byte(nz)], axis=-1)
+    out = Image.frombytes("RGB", (width, height), rgb.astype(np.uint8).tobytes())
     output_path = Path(output_path)
     out.save(output_path)
     return output_path
@@ -149,51 +144,43 @@ def estimate_roughness(
     edge_y = img.filter(ImageFilter.Kernel(
         (3, 3), [-1, -2, -1, 0, 0, 0, 1, 2, 1], scale=1, offset=128,
     ))
-    ex_data = edge_x.tobytes()
-    ey_data = edge_y.tobytes()
+    def _to_f(im: Image.Image) -> np.ndarray:
+        return np.frombuffer(im.tobytes(), dtype=np.uint8).astype(np.float64)
 
-    edge_mag = []
-    for i in range(width * height):
-        dx = (ex_data[i] - 128) / 128.0
-        dy = (ey_data[i] - 128) / 128.0
-        edge_mag.append(math.sqrt(dx * dx + dy * dy))
+    dx = (_to_f(edge_x) - 128) / 128.0
+    dy = (_to_f(edge_y) - 128) / 128.0
+    edge_mag = np.sqrt(dx * dx + dy * dy)
 
     # Pass 2: Local variance via box blur
     mean_img = img.filter(ImageFilter.BoxBlur(radius))
-    mean_data = [b / 255.0 for b in mean_img.tobytes()]
-    pixels = [b / 255.0 for b in img.tobytes()]
+    mean_data = _to_f(mean_img) / 255.0
+    pixels = _to_f(img) / 255.0
 
+    sq_bytes = np.clip((pixels * pixels * 255).astype(np.int64), 0, 255)
     sq_img = Image.frombytes(
-        "L", (width, height),
-        bytes(max(0, min(255, int(p * p * 255))) for p in pixels),
+        "L", (width, height), sq_bytes.astype(np.uint8).tobytes(),
     )
     mean_sq_img = sq_img.filter(ImageFilter.BoxBlur(radius))
-    mean_sq_data = [b / 255.0 for b in mean_sq_img.tobytes()]
+    mean_sq_data = _to_f(mean_sq_img) / 255.0
 
-    variance = []
-    for i in range(len(pixels)):
-        v = max(0.0, mean_sq_data[i] - mean_data[i] * mean_data[i])
-        variance.append(math.sqrt(v))  # sqrt for perceptual scaling
+    # sqrt for perceptual scaling
+    variance = np.sqrt(np.maximum(0.0, mean_sq_data - mean_data * mean_data))
 
     # Normalize both signals
-    max_edge = max(edge_mag) if edge_mag else 1.0
-    max_var = max(variance) if variance else 1.0
+    max_edge = float(edge_mag.max()) if edge_mag.size else 1.0
+    max_var = float(variance.max()) if variance.size else 1.0
     if max_edge < 1e-6:
         max_edge = 1.0
     if max_var < 1e-6:
         max_var = 1.0
 
     # Combine: 60% edge strength + 40% variance
-    rough_bytes = bytearray(width * height)
-    for i in range(width * height):
-        e = edge_mag[i] / max_edge
-        v = variance[i] / max_var
-        combined = 0.6 * e + 0.4 * v
-        # Remap with floor and ceiling
-        rough = 0.15 + combined * 0.75
-        rough_bytes[i] = max(0, min(255, int(rough * 255)))
+    combined = 0.6 * (edge_mag / max_edge) + 0.4 * (variance / max_var)
+    # Remap with floor and ceiling
+    rough = 0.15 + combined * 0.75
+    rough_bytes = np.clip((rough * 255).astype(np.int64), 0, 255)
 
-    out = Image.frombytes("L", (width, height), bytes(rough_bytes))
+    out = Image.frombytes("L", (width, height), rough_bytes.astype(np.uint8).tobytes())
     # Moderate smoothing to clean up noise while preserving edges
     out = out.filter(ImageFilter.GaussianBlur(radius=3))
     output_path = Path(output_path)

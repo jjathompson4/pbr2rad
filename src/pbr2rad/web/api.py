@@ -87,6 +87,7 @@ def _opts_from_request(req: ConvertOptionsRequest) -> ConvertOptions:
         rotate_per_map=req.rotate_per_map or {},
         flip_h=req.flip_h,
         flip_v=req.flip_v,
+        dat_resolution=req.dat_resolution,
     )
 
 

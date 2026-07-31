@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 
@@ -26,8 +27,8 @@ def _srgb_to_linear(c: float) -> float:
 
 
 # Precompute sRGB → linear LUT for 8-bit input (fast path).
-_SRGB_LUT = bytes  # placeholder for type hints; actual LUT is float tuple below
 _SRGB_LUT_F: tuple[float, ...] = tuple(_srgb_to_linear(i / 255.0) for i in range(256))
+_SRGB_LUT_NP = np.array(_SRGB_LUT_F, dtype=np.float64)
 
 
 def _rgbe(r: float, g: float, b: float) -> tuple[int, int, int, int]:
@@ -44,6 +45,24 @@ def _rgbe(r: float, g: float, b: float) -> tuple[int, int, int, int]:
         max(0, min(255, int(b * scale))),
         max(0, min(255, exponent + 128)),
     )
+
+
+def _rgbe_encode_array(rgb: np.ndarray) -> np.ndarray:
+    """Vectorized ``_rgbe``: (N, 3) float64 linear RGB → (N, 4) uint8 RGBE.
+
+    Bit-for-bit identical to the scalar function: same frexp, same
+    mantissa*256/m scale, same int() truncation and clamping.
+    """
+    m = np.maximum(np.maximum(rgb[:, 0], rgb[:, 1]), rgb[:, 2])
+    valid = m >= 1e-32
+    mantissa, exponent = np.frexp(m)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scale = np.where(valid, mantissa * 256.0 / m, 0.0)
+    ints = np.clip((rgb * scale[:, None]).astype(np.int64), 0, 255)
+    out = np.zeros((rgb.shape[0], 4), dtype=np.uint8)
+    out[:, :3] = np.where(valid[:, None], ints, 0)
+    out[:, 3] = np.where(valid, np.clip(exponent + 128, 0, 255), 0)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -64,83 +83,69 @@ def _rle_encode_channel(data: bytes) -> bytearray:
     * Control byte < 128 → next *control* bytes are literal (non-run) data.
     * Control byte >= 128 → run of *(control − 128)* copies of the next byte.
     * Runs must be ≥ ``_MIN_RUN`` (4) bytes long.
+
+    Implementation: maximal runs are located with numpy, then walked in
+    Python (one iteration per run, not per byte). Output is byte-identical
+    to the original per-byte scan: runs ≥ 4 emit run tokens chunked at 127;
+    shorter repeats join the literal accumulator, which flushes at exactly
+    127 bytes or when a run token (or end of data) arrives.
     """
     out = bytearray()
     n = len(data)
-    i = 0
+    if n == 0:
+        return out
 
-    while i < n:
-        # Look ahead for a run of identical values
-        run_val = data[i]
-        run_len = 1
-        while i + run_len < n and data[i + run_len] == run_val and run_len < _MAX_SPAN:
-            run_len += 1
+    arr = np.frombuffer(bytes(data), dtype=np.uint8)
+    starts = np.concatenate(([0], np.flatnonzero(arr[1:] != arr[:-1]) + 1))
+    lengths = np.diff(np.concatenate((starts, [n])))
+    values = arr[starts]
 
-        if run_len >= _MIN_RUN:
-            # Emit a run
-            out.append(run_len + 128)
-            out.append(run_val)
-            i += run_len
-        else:
-            # Collect literal (non-run) bytes until the next run ≥ _MIN_RUN
-            lit_start = i
-            lit_end = i
-
-            while lit_end < n:
-                # Check if a run starts at lit_end
-                peek_val = data[lit_end]
-                peek_len = 1
-                while (
-                    lit_end + peek_len < n
-                    and data[lit_end + peek_len] == peek_val
-                    and peek_len < _MIN_RUN
-                ):
-                    peek_len += 1
-
-                if peek_len >= _MIN_RUN:
-                    break  # run starts here — stop the literal span
-                lit_end += 1
-
-                if lit_end - lit_start >= _MAX_SPAN:
-                    break  # max literal span reached
-
-            span = lit_end - lit_start
-            out.append(span)
-            out.extend(data[lit_start:lit_end])
-            i = lit_end
-
+    pending = bytearray()
+    for v, run in zip(values.tolist(), lengths.tolist()):
+        while run > 0:
+            k = min(run, _MAX_SPAN)
+            if k >= _MIN_RUN:
+                if pending:
+                    out.append(len(pending))
+                    out.extend(pending)
+                    pending.clear()
+                out.append(k + 128)
+                out.append(v)
+            else:
+                pending.extend([v] * k)
+                while len(pending) >= _MAX_SPAN:
+                    out.append(_MAX_SPAN)
+                    out.extend(pending[:_MAX_SPAN])
+                    del pending[:_MAX_SPAN]
+            run -= k
+    if pending:
+        out.append(len(pending))
+        out.extend(pending)
     return out
 
 
-def _rle_encode_scanline(rgbe_row: bytearray, width: int) -> bytes:
+def _rle_encode_scanline(rgbe_row: bytearray | np.ndarray, width: int) -> bytes:
     """Encode one scanline of interleaved RGBE data using adaptive RLE.
 
-    ``rgbe_row`` is ``width * 4`` bytes of interleaved R,G,B,E values.
+    ``rgbe_row`` is ``width * 4`` bytes of interleaved R,G,B,E values
+    (or an equivalent (width, 4) uint8 array).
     Returns the full encoded scanline (header + 4 encoded channels).
     """
     # Scanline header: 0x02 0x02 <width big-endian 16-bit>
     header = bytes([0x02, 0x02, (width >> 8) & 0xFF, width & 0xFF])
 
-    # De-interleave into 4 channel arrays
-    ch_r = bytearray(width)
-    ch_g = bytearray(width)
-    ch_b = bytearray(width)
-    ch_e = bytearray(width)
+    if isinstance(rgbe_row, np.ndarray):
+        row = rgbe_row.reshape(width, 4)
+    else:
+        row = np.frombuffer(bytes(rgbe_row), dtype=np.uint8).reshape(width, 4)
 
-    for j in range(width):
-        off = j * 4
-        ch_r[j] = rgbe_row[off]
-        ch_g[j] = rgbe_row[off + 1]
-        ch_b[j] = rgbe_row[off + 2]
-        ch_e[j] = rgbe_row[off + 3]
-
-    # Encode each channel
+    # De-interleave via strided slicing (C memcpy, not a Python loop).
     return (
         header
-        + bytes(_rle_encode_channel(ch_r))
-        + bytes(_rle_encode_channel(ch_g))
-        + bytes(_rle_encode_channel(ch_b))
-        + bytes(_rle_encode_channel(ch_e))
+        + bytes(_rle_encode_channel(np.ascontiguousarray(row[:, 0]).tobytes()))
+        + bytes(_rle_encode_channel(np.ascontiguousarray(row[:, 1]).tobytes()))
+        + bytes(_rle_encode_channel(np.ascontiguousarray(row[:, 2]).tobytes()))
+        + bytes(_rle_encode_channel(np.ascontiguousarray(row[:, 3]).tobytes()))
     )
 
 
@@ -159,16 +164,18 @@ def write_hdr(
 ) -> None:
     """Write a Radiance HDR file.
 
-    ``pixels`` is a row-major sequence of linear RGB triples, top row first.
+    ``pixels`` is a row-major sequence of linear RGB triples, top row first —
+    either a list of 3-tuples or an ``(N, 3)`` float array.
 
     When ``rle=True`` (default), scanlines are compressed with adaptive RLE
     which typically reduces file size by 3–4×.  Set ``rle=False`` for the
     original uncompressed output.
     """
     path = Path(path)
-    if len(pixels) != width * height:
+    arr = np.asarray(pixels, dtype=np.float64).reshape(-1, 3)
+    if arr.shape[0] != width * height:
         raise ValueError(
-            f"pixel count {len(pixels)} does not match {width}x{height}"
+            f"pixel count {arr.shape[0]} does not match {width}x{height}"
         )
 
     header = (
@@ -180,36 +187,19 @@ def write_hdr(
         f"-Y {height} +X {width}\n"
     ).encode("ascii")
 
+    rgbe = _rgbe_encode_array(arr)
+
     with open(path, "wb") as f:
         f.write(header)
 
         if not rle or width < 8 or width > 0x7FFF:
             # Uncompressed path (original behavior, or width out of RLE range)
-            buf = bytearray(4 * width * height)
-            i = 0
-            for r, g, b in pixels:
-                enc = _rgbe(r, g, b)
-                buf[i] = enc[0]
-                buf[i + 1] = enc[1]
-                buf[i + 2] = enc[2]
-                buf[i + 3] = enc[3]
-                i += 4
-            f.write(bytes(buf))
+            f.write(rgbe.tobytes())
         else:
             # RLE path — encode scanline by scanline
+            rows = rgbe.reshape(height, width, 4)
             for row in range(height):
-                row_start = row * width
-                row_end = row_start + width
-                # Build interleaved RGBE row
-                rgbe_row = bytearray(width * 4)
-                for j, (r, g, b) in enumerate(pixels[row_start:row_end]):
-                    enc = _rgbe(r, g, b)
-                    off = j * 4
-                    rgbe_row[off] = enc[0]
-                    rgbe_row[off + 1] = enc[1]
-                    rgbe_row[off + 2] = enc[2]
-                    rgbe_row[off + 3] = enc[3]
-                f.write(_rle_encode_scanline(rgbe_row, width))
+                f.write(_rle_encode_scanline(rows[row], width))
 
 
 def convert_ldr_to_hdr(
@@ -232,45 +222,27 @@ def convert_ldr_to_hdr(
     """
     img = Image.open(src).convert("RGB")
     width, height = img.size
-    data = img.tobytes()  # row-major RGB bytes
+    data = np.frombuffer(img.tobytes(), dtype=np.uint8)  # row-major RGB bytes
 
-    pixels: list[tuple[float, float, float]] = []
-    lut = _SRGB_LUT_F
     if srgb:
-        for i in range(0, len(data), 3):
-            pixels.append(
-                (lut[data[i]] * scale, lut[data[i + 1]] * scale, lut[data[i + 2]] * scale)
-            )
+        pixels = _SRGB_LUT_NP[data] * scale
     else:
-        inv = scale / 255.0
-        for i in range(0, len(data), 3):
-            pixels.append((data[i] * inv, data[i + 1] * inv, data[i + 2] * inv))
+        pixels = data.astype(np.float64) * (scale / 255.0)
 
-    write_hdr(dst, pixels, width, height, rle=rle)
+    write_hdr(dst, pixels.reshape(-1, 3), width, height, rle=rle)
     return width, height
 
 
 def average_rgb(src: Path, *, srgb: bool = True) -> tuple[float, float, float]:
     """Compute mean linear RGB of an image (for manifest / reflectance)."""
     img = Image.open(src).convert("RGB")
-    data = img.tobytes()
-    n = len(data) // 3
-    if n == 0:
+    data = np.frombuffer(img.tobytes(), dtype=np.uint8).reshape(-1, 3)
+    if data.shape[0] == 0:
         return (0.0, 0.0, 0.0)
-    r = g = b = 0.0
-    lut = _SRGB_LUT_F
-    if srgb:
-        for i in range(0, len(data), 3):
-            r += lut[data[i]]
-            g += lut[data[i + 1]]
-            b += lut[data[i + 2]]
-    else:
-        inv = 1.0 / 255.0
-        for i in range(0, len(data), 3):
-            r += data[i] * inv
-            g += data[i + 1] * inv
-            b += data[i + 2] * inv
-    return (r / n, g / n, b / n)
+    vals = _SRGB_LUT_NP[data] if srgb else data / 255.0
+    sums = vals.sum(axis=0)
+    n = data.shape[0]
+    return (float(sums[0]) / n, float(sums[1]) / n, float(sums[2]) / n)
 
 
 def average_gray(src: Path) -> float:
@@ -283,21 +255,21 @@ def average_gray(src: Path) -> float:
 
     if mode.startswith("I"):
         # Integer modes: "I;16"/"I;16L"/"I;16B" are 16-bit; plain "I" is
-        # 32-bit (a 16-bit PNG often loads as "I"). getdata() decodes the
+        # 32-bit (a 16-bit PNG often loads as "I"). np.asarray decodes the
         # correct width/endianness for every variant — do NOT struct-unpack
         # raw bytes here: treating "I" as 16-bit shorts doubles the pixel
         # count with garbage values. Values are normalised as 16-bit.
-        pixels = list(img.getdata())
-        if not pixels:
+        arr = np.asarray(img, dtype=np.float64)
+        if arr.size == 0:
             return 0.0
-        return min(1.0, sum(pixels) / (65535.0 * len(pixels)))
+        return min(1.0, float(arr.sum()) / (65535.0 * arr.size))
 
     # 8-bit path (original behaviour)
     img = img.convert("L")
-    data = img.tobytes()
-    if not data:
+    data = np.frombuffer(img.tobytes(), dtype=np.uint8)
+    if data.size == 0:
         return 0.0
-    return sum(data) / (255.0 * len(data))
+    return float(data.sum(dtype=np.int64)) / (255.0 * data.size)
 
 
 __all__ = [

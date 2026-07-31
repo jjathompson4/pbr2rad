@@ -28,6 +28,9 @@ class ConvertOptionsRequest(BaseModel):
     rotate_per_map: dict[str, int] = Field(default_factory=dict)
     flip_h: bool = False
     flip_v: bool = False
+    # Web default caps .dat emission at 512px — visually indistinguishable
+    # for normal/roughness perturbation, 16x smaller output, much faster.
+    dat_resolution: int | None = Field(default=512, ge=64, le=2048)
 
 
 class ChannelMap(BaseModel):
