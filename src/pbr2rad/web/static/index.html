@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=14">
+  <link rel="stylesheet" href="/static/style.css?v=26">
 </head>
 <body>
 
@@ -19,6 +19,7 @@
   <span>PBR to Radiance Material Converter</span>
   <span class="badge-experimental">Experimental</span>
   <div class="header-actions">
+    <button id="about-btn" class="header-pill" type="button" aria-haspopup="dialog" aria-controls="about-dialog">About</button>
     <button id="theme-btn" type="button" aria-label="Toggle dark mode">
       <!-- Lucide "moon" (shown in light mode) / "sun" (shown in dark mode) -->
       <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -37,110 +38,28 @@
   </div>
 </header>
 
-<main>
-  <!-- Left: Settings -->
-  <div class="panel" id="settings-panel">
-    <h2>Settings</h2>
-
-    <div class="settings-mode" role="tablist" aria-label="Settings mode">
-      <button class="mode-btn active" data-mode="default"
-              type="button" role="tab" aria-selected="true">Default</button>
-      <button class="mode-btn" data-mode="advanced"
-              type="button" role="tab" aria-selected="false">Advanced</button>
-    </div>
-
-    <div id="advanced-options" hidden>
-
-    <div class="option-group">
-      <label>Projection</label>
-      <select id="opt-projection">
-        <option value="uv">UV (mesh UVs)</option>
-        <option value="planar">Planar</option>
-        <option value="box" selected>Box / Triplanar</option>
-        <option value="cylindrical">Cylindrical</option>
-        <option value="spherical">Spherical</option>
-      </select>
-    </div>
-
-    <div class="option-group" id="opt-axis-group" style="display:none">
-      <label>Planar Axis</label>
-      <select id="opt-planar-axis">
-        <option value="xy">XY</option>
-        <option value="xz">XZ</option>
-        <option value="yz">YZ</option>
-      </select>
-    </div>
-
-    <div class="option-row">
-      <div class="option-group">
-        <label>U Scale</label>
-        <input type="number" id="opt-u-scale" value="1" step="0.1" min="0.01">
-      </div>
-      <div class="option-group">
-        <label>V Scale</label>
-        <input type="number" id="opt-v-scale" value="1" step="0.1" min="0.01">
-      </div>
-    </div>
-
-    <div class="option-row">
-      <div class="option-group">
-        <label>U Offset</label>
-        <input type="number" id="opt-u-offset" value="0" step="0.1">
-      </div>
-      <div class="option-group">
-        <label>V Offset</label>
-        <input type="number" id="opt-v-offset" value="0" step="0.1">
-      </div>
-    </div>
-
-    <hr style="margin:0.75rem 0;border:none;border-top:1px solid #eee">
-
-    <div class="checkbox-row">
-      <input type="checkbox" id="opt-normal" checked>
-      <label for="opt-normal">Use normal map</label>
-    </div>
-
-    <div class="option-group" id="opt-bump-group">
-      <label>Bump Scale</label>
-      <input type="number" id="opt-bump-scale" value="1" step="0.1" min="0">
-    </div>
-
-    <div class="checkbox-row">
-      <input type="checkbox" id="opt-varying-rough" checked>
-      <label for="opt-varying-rough">Varying roughness</label>
-    </div>
-
-    <hr style="margin:0.75rem 0;border:none;border-top:1px solid #eee">
-
-    <div class="option-group">
-      <label>Roughness Override (leave empty for auto)</label>
-      <input type="number" id="opt-roughness" step="0.01" min="0" max="1" placeholder="auto">
-    </div>
-
-    <div class="option-group">
-      <label>Metalness Override (leave empty for auto)</label>
-      <input type="number" id="opt-metalness" step="0.01" min="0" max="1" placeholder="auto">
-    </div>
-
-    <hr style="margin:0.75rem 0;border:none;border-top:1px solid #eee">
-
-    <p style="font-size:0.85em;color:#666;margin:0.25rem 0">
-      Rotate individual maps via the thumbnail grid next to each material.
-    </p>
-
-    <div class="checkbox-row">
-      <input type="checkbox" id="opt-flip-h">
-      <label for="opt-flip-h">Flip all horizontal</label>
-    </div>
-
-    <div class="checkbox-row">
-      <input type="checkbox" id="opt-flip-v">
-      <label for="opt-flip-v">Flip all vertical</label>
-    </div>
-
-    </div><!-- /#advanced-options -->
+<!-- About: what the app is for, who it's for, and its status -->
+<dialog id="about-dialog" class="about-dialog" aria-labelledby="about-title">
+  <div class="about-head">
+    <h2 id="about-title">About pbr2rad</h2>
+    <button type="button" class="about-close" id="about-close" aria-label="Close">&times;</button>
   </div>
+  <div class="about-body">
+    <h3>What it does</h3>
+    <p>Turns a PBR texture set — colour, roughness, metalness and normal maps from ambientCG, Poly Haven, or your own files — into a ready-to-use Radiance material: the images as HDR/<code>.dat</code> data, the <code>.cal</code> projection, and a <code>plastic</code>/<code>metal</code> primitive with calibrated reflectance, zipped together with a preview render.</p>
 
+    <h3>Why</h3>
+    <p>Photoreal textured materials in Radiance are usually expert-mode work: hand-writing <code>.cal</code> functions, converting images to HDR, guessing at reflectance. pbr2rad does that conversion for you, so you get physically plausible, textured materials without the ritual — and it reports the visible reflectance so the result stays defensible for lighting analysis.</p>
+
+    <h3>Intended workflow · ClimateStudio</h3>
+    <p>Pick or upload a texture set → tune it against the reference render → Download the .zip → drop the material folder into ClimateStudio's custom materials library → assign it in Rhino from the ClimateStudio material picker. The output is plain Radiance, so it also works in any other Radiance-based tool.</p>
+
+    <h3>Status</h3>
+    <p>pbr2rad is an experiment by <a href="https://thompsonjeff.com" target="_blank" rel="noopener">Jeff Thompson</a>, not a Solemma product. It has been built with approval for use from the ClimateStudio developers, who have accommodated pbr2rad materials on their side. Textures are CC0 from ambientCG and Poly Haven. Questions or ideas: <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.</p>
+  </div>
+</dialog>
+
+<main>
   <!-- Middle: Source -->
   <div class="panel">
     <h2>Reference Material</h2>
@@ -200,8 +119,123 @@
   <div class="panel" id="output-panel">
     <h2>Output</h2>
     <div class="status" id="status">Ready</div>
-    <img class="preview-img" id="preview-img" alt="Preview render">
-    <dl class="result-summary" id="result-summary" style="display:none"></dl>
+    <!-- Render next to the source's own sphere render (when converting from
+         the Browse panel) so the match can be judged at a glance. -->
+    <div class="preview-pair" id="preview-pair">
+      <figure class="preview-fig" id="preview-ref-fig" style="display:none">
+        <img id="preview-ref-img" alt="Reference render">
+        <figcaption id="preview-ref-cap">Reference</figcaption>
+      </figure>
+      <figure class="preview-fig" id="preview-out-fig">
+        <img class="preview-img" id="preview-img" alt="Preview render">
+        <figcaption id="preview-cap" style="display:none" title="Radiance render of the converted material — fixed exposure, mild saturation for comparability with reference renders">pbr2rad · Radiance</figcaption>
+      </figure>
+    </div>
+
+    <!-- Three tabs; the panel keeps a fixed height and Download stays pinned -->
+    <div class="out-tabs" role="tablist" aria-label="Output sections">
+      <button class="out-tab-btn" data-out-tab="maps" type="button" role="tab" aria-selected="false">Maps &amp; Projection</button>
+      <button class="out-tab-btn active" data-out-tab="override" type="button" role="tab" aria-selected="true">Override Properties</button>
+      <button class="out-tab-btn" data-out-tab="summary" type="button" role="tab" aria-selected="false">Summary</button>
+    </div>
+
+    <div class="out-panes">
+      <!-- 1 · Maps & Projection: conversion settings. Apply to the next
+           conversion and, when a result is showing, re-render it live. -->
+      <div class="out-pane" id="out-tab-maps">
+        <div id="advanced-options">
+          <div class="opt-heading">Projection</div>
+          <div class="opt-grid-2-1">
+            <div class="option-group">
+              <label>Mode <span class="tip" data-tip="How the texture is placed on geometry. Box (triplanar) needs no UVs; Planar projects along one axis pair; UV uses the mesh&#x27;s own UVs (Radiance 6 Lu/Lv); Cylindrical/Spherical wrap around the object." tabindex="0" role="img" aria-label="How the texture is placed on geometry. Box (triplanar) needs no UVs; Planar projects along one axis pair; UV uses the mesh&#x27;s own UVs (Radiance 6 Lu/Lv); Cylindrical/Spherical wrap around the object."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></label>
+              <select id="opt-projection">
+                <option value="uv">UV (mesh UVs)</option>
+                <option value="planar">Planar</option>
+                <option value="box" selected>Box / Triplanar</option>
+                <option value="cylindrical">Cylindrical</option>
+                <option value="spherical">Spherical</option>
+              </select>
+            </div>
+            <div class="option-group" id="opt-axis-group">
+              <label>Planar axis</label>
+              <select id="opt-planar-axis" disabled>
+                <option value="xy">XY</option>
+                <option value="xz">XZ</option>
+                <option value="yz">YZ</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt-grid-4">
+            <div class="option-group"><label>U scale</label><input type="number" id="opt-u-scale" value="1" step="0.1" min="0.01"></div>
+            <div class="option-group"><label>V scale</label><input type="number" id="opt-v-scale" value="1" step="0.1" min="0.01"></div>
+            <div class="option-group"><label>U offset</label><input type="number" id="opt-u-offset" value="0" step="0.1"></div>
+            <div class="option-group"><label>V offset</label><input type="number" id="opt-v-offset" value="0" step="0.1"></div>
+          </div>
+          <div class="opt-inline">
+            <label class="checkbox-row"><input type="checkbox" id="opt-flip-h"><span>Flip horizontal</span></label>
+            <label class="checkbox-row"><input type="checkbox" id="opt-flip-v"><span>Flip vertical</span></label>
+            <span class="opt-hint">per-map rotation: thumbnail grid <span class="tip" data-tip="Click a map thumbnail next to the selected material to rotate that one map in 90° steps." tabindex="0" role="img" aria-label="Click a map thumbnail next to the selected material to rotate that one map in 90° steps."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+          </div>
+
+          <div class="opt-heading">Maps</div>
+          <div class="opt-inline">
+            <label class="checkbox-row"><input type="checkbox" id="opt-normal" checked><span>Use normal map</span></label>
+            <span class="tip" data-tip="Emit the normal map as a Radiance texdata perturbation (bump mapping). Off = flat shading from the colour map only. Its strength is the Bump slider under Override Properties." tabindex="0" role="img" aria-label="Emit the normal map as a Radiance texdata perturbation (bump mapping). Off = flat shading from the colour map only. Its strength is the Bump slider under Override Properties."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span>
+            <label class="checkbox-row"><input type="checkbox" id="opt-varying-rough"><span>Roughness map → brightness (legacy)</span></label>
+            <span class="tip" data-tip="Opt-in, for back-compat. Emits a brightdata pattern from the roughness map — but a Radiance pattern scales the material&#x27;s colour (its diffuse reflectance), not its roughness, so rough areas just get darker." tabindex="0" role="img" aria-label="Opt-in, for back-compat. Emits a brightdata pattern from the roughness map — but a Radiance pattern scales the material&#x27;s colour (its diffuse reflectance), not its roughness, so rough areas just get darker."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2 · Override Properties: the material levers; re-renders the same job -->
+      <div class="out-pane active" id="out-tab-override">
+        <div class="out-empty" id="tune-empty">Convert a material to tune it here.</div>
+        <div class="tune" id="tune-panel" style="display:none">
+          <div class="tune-head">
+            <span>Override properties</span>
+            <button type="button" class="link-btn" id="tune-reset" data-tip="Back to the values read from the maps: metalness and roughness from their maps, the primitive&#x27;s default specular, albedo ×1, bump ×1.">Reset to maps</button>
+          </div>
+          <label class="tune-row">
+            <span>Metalness <span class="tip" data-tip="0 = plastic (dielectric: white highlight over the coloured diffuse). 1 = metal (coloured highlight, no diffuse). The Radiance primitive switches at 0.5." tabindex="0" role="img" aria-label="0 = plastic (dielectric: white highlight over the coloured diffuse). 1 = metal (coloured highlight, no diffuse). The Radiance primitive switches at 0.5."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <input type="range" id="tune-metal" min="0" max="1" step="0.01">
+            <output id="tune-metal-val"></output>
+            <span class="tune-derived" id="tune-metal-derived"></span>
+          </label>
+          <label class="tune-row">
+            <span>Specular <span class="tip" data-tip="Mirror-like share of the reflection (Radiance specularity). Plastic defaults to 0.05 (≈ 4 % F0); metal uses 1.0 with the colour map as its tint." tabindex="0" role="img" aria-label="Mirror-like share of the reflection (Radiance specularity). Plastic defaults to 0.05 (≈ 4 % F0); metal uses 1.0 with the colour map as its tint."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <input type="range" id="tune-spec" min="0" max="1" step="0.005">
+            <output id="tune-spec-val"></output>
+            <span class="tune-derived" id="tune-spec-derived"></span>
+          </label>
+          <label class="tune-row">
+            <span>Roughness <span class="tip" data-tip="Perceptual roughness (mean of the roughness map). Radiance α = roughness². 0 = mirror-sharp highlight, 1 = matte." tabindex="0" role="img" aria-label="Perceptual roughness (mean of the roughness map). Radiance α = roughness². 0 = mirror-sharp highlight, 1 = matte."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <input type="range" id="tune-rough" min="0" max="1" step="0.005">
+            <output id="tune-rough-val"></output>
+            <span class="tune-derived" id="tune-rough-derived"></span>
+          </label>
+          <label class="tune-row">
+            <span>Albedo × <span class="tip" data-tip="Multiplies the colour map (diffuse reflectance). Clamped so the total reflectance never exceeds 100 %." tabindex="0" role="img" aria-label="Multiplies the colour map (diffuse reflectance). Clamped so the total reflectance never exceeds 100 %."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <input type="range" id="tune-diff" min="0.25" max="2" step="0.01">
+            <output id="tune-diff-val"></output>
+            <span class="tune-derived" id="tune-diff-derived"></span>
+          </label>
+          <label class="tune-row">
+            <span>Bump × <span class="tip" data-tip="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map." tabindex="0" role="img" aria-label="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <input type="range" id="tune-bump" min="0" max="3" step="0.05" value="1">
+            <output id="tune-bump-val">1.00</output>
+            <span class="tune-derived" id="tune-bump-derived"></span>
+          </label>
+        </div>
+        <div class="out-note" id="tune-note" style="display:none">Every change re-renders the job. The value on the right is what the slider produces in the Radiance material.</div>
+      </div>
+
+      <!-- 3 · Summary: what the converted material is (for ClimateStudio) -->
+      <div class="out-pane" id="out-tab-summary">
+        <div class="out-empty" id="summary-empty">The converted material's properties will appear here.</div>
+        <dl class="result-summary" id="result-summary" style="display:none"></dl>
+      </div>
+    </div>
+
     <a class="btn btn-download" id="download-btn" style="display:none;text-align:center;text-decoration:none">Download .zip</a>
   </div>
 </main>
@@ -227,6 +261,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=26"></script>
 </body>
 </html>

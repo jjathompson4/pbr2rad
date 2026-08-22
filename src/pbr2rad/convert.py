@@ -33,7 +33,13 @@ class ConvertOptions:
     metalness_override: float | None = None
     normal: bool = True              # use normal map if discovered
     bump_scale: float = 1.0          # normal map perturbation strength
-    varying_roughness: bool = True   # use roughness map for brightdata if discovered
+    # Roughness map → brightdata pattern. OFF by default: a Radiance pattern
+    # scales the material COLOUR (the diffuse reflectance of a plastic, all of
+    # a metal), not its roughness — so this darkens the material by up to
+    # ``rough_modulation`` where the map is rough. Kept as an explicit opt-in
+    # for back-compat; true spatially varying roughness needs a mixdata of two
+    # plastics (roadmap).
+    varying_roughness: bool = False
     rough_modulation: float = 0.8    # how strongly roughness affects specular
     estimate_maps: bool = True       # estimate missing normal/roughness from albedo
     # Cap the longest edge of normal/roughness .dat emission (None = native).
@@ -54,6 +60,14 @@ class ConvertOptions:
 
     # Ship a ClimateStudio preview file alongside the .rad (see pvw.py).
     write_pvw: bool = True
+
+    # Material tuning. ``specularity_override`` replaces the primitive's
+    # default specular reflectance (plastic 0.05, metal 1.0);
+    # ``diffuse_scale`` multiplies the albedo (clamped so the shipped pattern
+    # never exceeds 100 % reflectance). Both are what the web Output-panel
+    # sliders drive via re-render.
+    specularity_override: float | None = None
+    diffuse_scale: float = 1.0
 
 
 @dataclass
@@ -82,6 +96,47 @@ class ConvertResult:
     # Provenance read from the fetcher's ``pbr2rad_source.json`` sidecar
     # (source, asset_id, asset_url, license, …), or None for local sets.
     source: dict | None = None
+    # Effective material characteristics as emitted (after overrides):
+    # specular reflectance, Radiance roughness (alpha = perceptual²), the
+    # diffuse multiplier in force, and the photopic reflectance split.
+    specularity: float = 0.05
+    roughness_radiance: float = 0.0
+    diffuse_scale: float = 1.0
+    reflectance: dict = field(default_factory=dict)
+    avg_srgb_hex: str = "#000000"
+
+
+def material_reflectance(
+    avg_rgb: tuple[float, float, float],
+    *,
+    primitive: str,
+    specularity: float,
+    diffuse_scale: float = 1.0,
+) -> dict:
+    """Reflectance split of the emitted material, Radiance semantics.
+
+    With the pattern colour ``C = avg_rgb × diffuse_scale`` (what the ``.hdr``
+    carries) and the ``.rad`` colour at ``1 1 1``:
+
+    * plastic: diffuse = C × (1 − spec), specular = spec (uncoloured);
+    * metal:   diffuse = C × (1 − spec), specular = C × spec.
+
+    Visible (photopic) values use Radiance's 0.265/0.670/0.065 weights — the
+    "VLR" numbers ClimateStudio would show for an untextured material.
+    """
+    spec = max(0.0, min(1.0, float(specularity)))
+    c = [min(1.0, max(0.0, float(v) * diffuse_scale)) for v in avg_rgb]
+    diffuse = [v * (1.0 - spec) for v in c]
+    specular = [v * spec for v in c] if primitive == "metal" else [spec] * 3
+    dv = hdr_mod.visible(diffuse)
+    sv = hdr_mod.visible(specular)
+    return {
+        "diffuse_rgb": [round(v, 4) for v in diffuse],
+        "specular_rgb": [round(v, 4) for v in specular],
+        "diffuse_vis": round(dv, 4),
+        "specular_vis": round(sv, 4),
+        "total_vis": round(dv + sv, 4),
+    }
 
 
 def _read_source_sidecar(root: Path) -> dict | None:
@@ -240,18 +295,24 @@ def _convert_set_inner(
     else:
         metalness = 0.0
 
-    # Reserve headroom for the specular term to guarantee energy
-    # conservation at every texel — see pbr2rad-audit/audit_summary.md.
-    # Plastic adds a constant spec on top of the diffuse pattern, so we
-    # pre-scale the .hdr by (1 - spec) and keep R=G=B=1 in the .rad.
-    # Metal uses the pattern colour itself as the specular reflectance
-    # (no additive term), so no scaling is needed.
-    spec = rad_mod.default_specularity(metalness)
-    albedo_scale = 1.0 if metalness >= 0.5 else (1.0 - spec)
+    # Specular reflectance: the primitive default unless overridden. The
+    # .rad keeps R=G=B=1 and the .hdr carries the colour pattern C; Radiance
+    # itself (normal.c: rdiff = 1 - rspec) makes the diffuse term C×(1-spec)
+    # for both plastic and metal and the specular term spec (plastic,
+    # uncoloured) or C×spec (metal), so C ≤ 1 already conserves energy at
+    # every texel — no extra headroom scaling is needed (an earlier version
+    # pre-scaled by 1-spec on top, darkening plastics by 5 %). The optional
+    # diffuse multiplier is applied here and clipped at 1.0.
+    if opts.specularity_override is not None:
+        spec = max(0.0, min(1.0, float(opts.specularity_override)))
+    else:
+        spec = rad_mod.default_specularity(metalness)
+    diffuse_scale = max(0.0, float(opts.diffuse_scale))
+    albedo_scale = diffuse_scale
 
     # 2. Albedo → Radiance HDR
     width, height = hdr_mod.convert_ldr_to_hdr(
-        pbr.albedo, hdr_file, srgb=True, scale=albedo_scale,
+        pbr.albedo, hdr_file, srgb=True, scale=albedo_scale, clip=1.0,
     )
     avg_rgb = hdr_mod.average_rgb(pbr.albedo, srgb=True)
     channels_used.append("albedo")
@@ -280,7 +341,9 @@ def _convert_set_inner(
             est_normal = work_dir / f"{pbr.name}_est_nor_gl.png"
             estimate_mod.estimate_normal(pbr.albedo, est_normal, strength=opts.bump_scale)
             pbr.maps["normal_gl"] = est_normal
-        if pbr.roughness is None and opts.varying_roughness:
+        if pbr.roughness is None and opts.roughness_override is None:
+            # The estimate feeds the scalar roughness (and the legacy
+            # brightdata path when varying_roughness is on).
             est_rough = work_dir / f"{pbr.name}_est_rough.png"
             estimate_mod.estimate_roughness(pbr.albedo, est_rough)
             pbr.maps["roughness"] = est_rough
@@ -358,11 +421,16 @@ def _convert_set_inner(
         cal_file=cal_file.name,
         roughness=roughness,
         metalness=metalness,
+        specularity=spec,
         source_note=_source_note(source),
         **normal_kwargs,
         **rough_kwargs,
     )
     rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
+    reflectance = material_reflectance(
+        avg_rgb, primitive=mat.as_primitive(), specularity=spec,
+        diffuse_scale=diffuse_scale,
+    )
 
     # 6. ClimateStudio preview file. The albedo swatch is the always-available
     #    source; callers with a renderer (the web app) overwrite the .pvw with
@@ -405,6 +473,13 @@ def _convert_set_inner(
         channels_used=channels_used,
         channels_estimated=channels_estimated,
         source=source,
+        specularity=spec,
+        roughness_radiance=rad_mod._rad_roughness(roughness),
+        diffuse_scale=diffuse_scale,
+        reflectance=reflectance,
+        avg_srgb_hex=hdr_mod.srgb_hex(
+            [min(1.0, c * diffuse_scale) for c in avg_rgb]
+        ),
     )
 
 
@@ -431,12 +506,17 @@ def write_manifest(results: list[ConvertResult], out_root: Path) -> Path:
             "primitive": r.primitive,
             "files": files,
             "resolution": [r.width, r.height],
-            # Mean linear RGB of the SOURCE albedo (pre energy-conservation
-            # scaling — the shipped .hdr is pre-multiplied by 1-spec for
-            # plastics; see convert_set).
+            # Mean linear RGB of the SOURCE albedo (before any diffuse_scale).
             "avg_linear_rgb": [round(c, 4) for c in r.avg_rgb],
             "roughness": round(r.roughness, 4),
             "metalness": round(r.metalness, 4),
+            # Emitted material characteristics (Radiance semantics; the
+            # "VLR" numbers a material browser can't read off a textured chain).
+            "specularity": round(r.specularity, 4),
+            "roughness_radiance": round(r.roughness_radiance, 4),
+            "diffuse_scale": round(r.diffuse_scale, 4),
+            "reflectance": r.reflectance,
+            "avg_srgb_hex": r.avg_srgb_hex,
         })
         # Provenance (source, asset_id, asset_url, license, …) when the set
         # came from ``pbr2rad fetch``. Additive — omitted for local sets.

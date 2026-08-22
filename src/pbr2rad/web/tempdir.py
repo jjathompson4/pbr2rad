@@ -7,7 +7,9 @@ A background cleanup task removes directories older than ``MAX_AGE_SECONDS``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import shutil
 import tempfile
 import time
@@ -57,6 +59,38 @@ def get_job_dir(job_id: str) -> Path | None:
     root = get_root()
     d = root / job_id
     return d if d.is_dir() else None
+
+
+JOB_STATE_FILE = "job.json"
+
+
+def touch_job(job_id: str) -> None:
+    """Restart a job's expiry clock (the sweeper keys off the job dir mtime)."""
+    d = get_job_dir(job_id)
+    if d is not None:
+        try:
+            os.utime(d, None)
+        except OSError:
+            pass
+
+
+def write_job_state(job_id: str, state: dict) -> None:
+    """Persist what a job was converted from/with so it can be re-rendered."""
+    d = get_job_dir(job_id)
+    if d is None:
+        return
+    (d / JOB_STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def read_job_state(job_id: str) -> dict | None:
+    d = get_job_dir(job_id)
+    if d is None:
+        return None
+    try:
+        data = json.loads((d / JOB_STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def cleanup() -> int:

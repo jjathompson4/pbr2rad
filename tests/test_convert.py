@@ -48,7 +48,9 @@ def test_convert_set_end_to_end(tmp_path: Path) -> None:
     pbr = discover(src)
     out = tmp_path / "out"
     out.mkdir()
-    result = convert_set(pbr, out, ConvertOptions(projection="uv"))
+    # varying_roughness is opt-in (it modulates the diffuse, not the roughness);
+    # this test exercises the full legacy chain explicitly.
+    result = convert_set(pbr, out, ConvertOptions(projection="uv", varying_roughness=True))
 
     assert result.rad_file.exists()
     assert result.cal_file.exists()
@@ -117,3 +119,82 @@ def test_manifest_lists_all_materials(tmp_path: Path) -> None:
     for entry in data["materials"]:
         assert entry["files"]["rad"].endswith(".rad")
         assert entry["primitive"] in ("plastic", "metal")
+
+
+# ---------------------------------------------------------------------------
+# Material characteristics, overrides, and the (corrected) albedo scaling
+# ---------------------------------------------------------------------------
+
+def test_plastic_hdr_is_not_prescaled_and_readout_matches_radiance(tmp_path: Path) -> None:
+    """Radiance makes plastic diffuse = C × (1 − spec) itself, so the .hdr must
+    carry C unscaled (the old 1−spec pre-scale darkened plastics by 5 %)."""
+    from pbr2rad.hdr import visible
+    src = tmp_path / "in" / "grey"
+    _make_png(src / "grey_diff.png", (128, 128, 128), size=(8, 8))   # sRGB 128 → 0.2158 linear
+    result = convert_set(discover(src), tmp_path / "out", ConvertOptions(projection="uv"))
+    assert result.primitive == "plastic"
+    assert abs(result.specularity - 0.05) < 1e-9
+    assert abs(result.avg_rgb[0] - 0.2158) < 0.002
+    refl = result.reflectance
+    assert abs(refl["diffuse_rgb"][0] - 0.2158 * 0.95) < 0.003
+    assert refl["specular_rgb"] == [0.05, 0.05, 0.05]
+    assert abs(refl["diffuse_vis"] - visible(refl["diffuse_rgb"])) < 1e-3
+    assert abs(refl["total_vis"] - (refl["diffuse_vis"] + 0.05)) < 1e-3
+    assert result.avg_srgb_hex == "#808080"
+    # The .hdr encodes ~0.2158, not 0.2158 × 0.95: the header's first pixel
+    # exponent/mantissa are easier to check through the manifest + a re-read.
+    manifest = json.loads(write_manifest([result], tmp_path / "out").read_text())
+    entry = manifest["materials"][0]
+    assert entry["specularity"] == 0.05
+    assert entry["reflectance"]["total_vis"] == refl["total_vis"]
+    assert entry["avg_srgb_hex"] == "#808080"
+    rad = result.rad_file.read_text()
+    assert "5 1 1 1 0.05 " in rad
+
+
+def test_specularity_and_diffuse_overrides(tmp_path: Path) -> None:
+    src = tmp_path / "in" / "grey"
+    _make_png(src / "grey_diff.png", (128, 128, 128), size=(8, 8))
+    opts = ConvertOptions(projection="uv", specularity_override=0.2, diffuse_scale=1.5,
+                          roughness_override=0.5)
+    result = convert_set(discover(src), tmp_path / "out", opts)
+    assert result.specularity == 0.2
+    assert result.diffuse_scale == 1.5
+    assert "5 1 1 1 0.2 0.25" in result.rad_file.read_text()     # spec, alpha = 0.5²
+    refl = result.reflectance
+    assert abs(refl["diffuse_rgb"][0] - 0.2158 * 1.5 * 0.8) < 0.004
+    assert refl["specular_rgb"] == [0.2, 0.2, 0.2]
+    assert result.roughness_radiance == 0.25
+
+
+def test_metal_reflectance_split(tmp_path: Path) -> None:
+    src = tmp_path / "in" / "steel"
+    _make_png(src / "steel_diff.png", (200, 200, 200), size=(8, 8))
+    _make_png(src / "steel_metal.png", (255, 255, 255), size=(8, 8))
+    result = convert_set(discover(src), tmp_path / "out", ConvertOptions(projection="uv"))
+    assert result.primitive == "metal" and result.specularity == 1.0
+    refl = result.reflectance
+    assert refl["diffuse_rgb"] == [0.0, 0.0, 0.0]
+    assert abs(refl["specular_rgb"][0] - result.avg_rgb[0]) < 1e-3
+    assert abs(refl["total_vis"] - refl["specular_vis"]) < 1e-9
+
+
+def test_material_reflectance_clamps_boost(tmp_path: Path) -> None:
+    from pbr2rad.convert import material_reflectance
+    r = material_reflectance((0.9, 0.9, 0.9), primitive="plastic", specularity=0.05, diffuse_scale=2.0)
+    assert r["diffuse_rgb"] == [0.95, 0.95, 0.95]      # C clipped to 1.0 before × (1 − spec)
+    assert r["total_vis"] == 1.0
+
+
+def test_varying_roughness_is_opt_in(tmp_path: Path) -> None:
+    """Default chain has no brightdata: the roughness map only feeds the scalar
+    roughness (a pattern would scale the diffuse reflectance, not roughness)."""
+    src = tmp_path / "in" / "m"
+    _make_png(src / "m_diff.png", (128, 128, 128), size=(8, 8))
+    _make_png(src / "m_rough.png", (200, 200, 200), size=(8, 8))
+    _make_png(src / "m_nor_gl.png", (128, 128, 255), size=(8, 8))
+    result = convert_set(discover(src), tmp_path / "out", ConvertOptions(projection="uv"))
+    rad = result.rad_file.read_text()
+    assert "brightdata" not in rad and "texdata" in rad
+    assert "roughness" in result.channels_used           # still used for the scalar
+    assert abs(result.roughness - 200 / 255) < 0.01

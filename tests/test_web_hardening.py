@@ -4,6 +4,7 @@ path traversal, downscaling, and the mocked Poly Haven convert path."""
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -524,3 +525,101 @@ class TestCatalogCache:
             assert [e["id"] for e in data] == ["x"]
         finally:
             api_mod._CATALOG_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Re-render an existing job with overrides (Output-panel sliders)
+# ---------------------------------------------------------------------------
+
+class TestRerender:
+    def _convert(self, client, monkeypatch):
+        def fake_download(asset_id, dest, *, resolution, fmt, verbose=False):
+            mat_dir = Path(dest) / "Bricks104"
+            mat_dir.mkdir(parents=True)
+            (mat_dir / "Bricks104_1K-JPG_Color.png").write_bytes(_png_bytes(16, (128, 128, 128)))
+            (mat_dir / "Bricks104_1K-JPG_Roughness.png").write_bytes(_png_bytes(16, (128, 128, 128)))
+            return mat_dir
+
+        monkeypatch.setattr("pbr2rad.ambientcg.download_texture_set", fake_download)
+        monkeypatch.setattr(api_mod, "radiance_available", lambda: False)
+        resp = client.post("/api/v1/sources/ambientcg/convert",
+                           json={"asset_id": "Bricks104", "resolution": "1k", "fmt": "jpg"})
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    def test_rerender_applies_overrides_and_composes(self, client, monkeypatch):
+        from pbr2rad.web import tempdir
+        body = self._convert(client, monkeypatch)
+        job = body["job_id"]
+        assert body["specularity"] == 0.05 and body["diffuse_scale"] == 1.0
+        assert body["reflectance"]["specular_rgb"] == [0.05, 0.05, 0.05]
+        assert tempdir.read_job_state(job)["kind"] == "source"
+
+        r = client.post(f"/api/v1/jobs/{job}/rerender", json={"specularity": 0.2, "roughness": 0.4})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["job_id"] == job and d["specularity"] == 0.2 and d["roughness"] == 0.4
+        assert d["roughness_radiance"] == 0.16
+        assert d["reflectance"]["specular_rgb"] == [0.2, 0.2, 0.2]
+        rad = next((tempdir.get_output_dir(job)).rglob("Bricks104.rad")).read_text()
+        assert "5 1 1 1 0.2 0.16" in rad
+        # Download reflects the tuned material.
+        dl = client.get(d["download_url"])
+        assert dl.status_code == 200
+
+        # A second move keeps the earlier overrides (they compose).
+        r2 = client.post(f"/api/v1/jobs/{job}/rerender", json={"diffuse_scale": 1.5})
+        assert r2.status_code == 200
+        d2 = r2.json()
+        assert d2["specularity"] == 0.2 and d2["roughness"] == 0.4 and d2["diffuse_scale"] == 1.5
+        assert d2["reflectance"]["diffuse_rgb"][0] > d["reflectance"]["diffuse_rgb"][0]
+
+    def test_rerender_metalness_flips_primitive(self, client, monkeypatch):
+        body = self._convert(client, monkeypatch)
+        job = body["job_id"]
+        assert body["primitive"] == "plastic"
+        r = client.post(f"/api/v1/jobs/{job}/rerender", json={"metalness": 0.8})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["primitive"] == "metal" and d["metalness"] == 0.8
+        assert d["specularity"] == 1.0                        # primitive default re-seeded
+        assert d["reflectance"]["diffuse_rgb"] == [0.0, 0.0, 0.0]
+        # Back to plastic, dropping any stored specularity override.
+        r2 = client.post(f"/api/v1/jobs/{job}/rerender", json={"metalness": 0.0, "reset_specularity": True})
+        assert r2.json()["primitive"] == "plastic" and r2.json()["specularity"] == 0.05
+
+    def test_rerender_with_options_patch(self, client, monkeypatch):
+        """Conversion settings (projection etc.) can be re-applied to the job."""
+        body = self._convert(client, monkeypatch)
+        job = body["job_id"]
+        from pbr2rad.web import tempdir
+        out = tempdir.get_output_dir(job)
+        assert "planar" not in next(out.rglob("Bricks104.cal")).read_text()
+        r = client.post(f"/api/v1/jobs/{job}/rerender", json={
+            "options": {"projection": "planar", "planar_axis": "xz", "u_scale": 2.0},
+            "roughness": 0.3,
+        })
+        assert r.status_code == 200, r.text
+        cal = next(out.rglob("Bricks104.cal")).read_text()
+        assert "planar XZ" in cal and "u_scale : 2" in cal
+        assert r.json()["roughness"] == 0.3
+        # Stored options now reflect the patch (later moves compose on them).
+        assert tempdir.read_job_state(job)["options"]["projection"] == "planar"
+
+    def test_rerender_unknown_job_404_and_validation(self, client):
+        assert client.post("/api/v1/jobs/doesnotexist/rerender", json={"specularity": 0.1}).status_code == 404
+        r = client.post("/api/v1/jobs/doesnotexist/rerender", json={"specularity": 1.5})
+        assert r.status_code == 422
+
+    def test_rerender_upload_job_with_labels(self, client, monkeypatch):
+        from pbr2rad.web import tempdir
+        monkeypatch.setattr(api_mod, "radiance_available", lambda: False)
+        files = [_upload("a.png", _png_bytes(16, (120, 90, 60))), _upload("r.png", _png_bytes(16, (90, 90, 90)))]
+        channels = json.dumps([{"filename": "a.png", "channel": "albedo"}, {"filename": "r.png", "channel": "roughness"}])
+        resp = client.post("/api/v1/convert/upload", files=files, data={"channels": channels, "name": "mymat", "options": "{}"})
+        assert resp.status_code == 200, resp.text
+        job = resp.json()["job_id"]
+        assert tempdir.read_job_state(job)["kind"] == "upload"
+        r = client.post(f"/api/v1/jobs/{job}/rerender", json={"specularity": 0.1})
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "mymat" and r.json()["specularity"] == 0.1
