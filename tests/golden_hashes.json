@@ -9,7 +9,7 @@
     "albedo_only_estimated/albedo_only_estimated_normal.cal": "e4dbfafcb93e8a9dd2723b9425de79a58abe02553141a3bc92686a9d23df59f1",
     "albedo_only_estimated/albedo_only_estimated_rough.cal": "6eb342dfa9453c923eab521cc4a5d23f8d753ea4bdf3dd762ce151315fa3e6e5",
     "albedo_only_estimated/albedo_only_estimated_rough.dat": "5e662e15e00dd50bb6655666848981f344c8d95ea0f09d8f04930a0ef38d03f0",
-    "manifest.json": "844409596391b1f09470cd49afa1b6087225bff4942f6a0a237d9bbd9b69ee54"
+    "manifest.json": "e480214393258c01ef117790fb93933ce82e3d05535ae3d1985cd23a38d839d2"
   },
   "full_set": {
     "full_set/full_set.cal": "dd8f61e30e8c4f923bbefe22a39b348a0c2e6f485e00c3ccc0caa24645ab1f88",
@@ -21,10 +21,10 @@
     "full_set/full_set_normal.cal": "e775ad8a15f3658bc22796c99636c0b5f6a40a9d951e4a701b117fa905fd1f28",
     "full_set/full_set_rough.cal": "77d130ee53f4cc07b99395531e33d929388ec8944091f47961abaf2bf0503782",
     "full_set/full_set_rough.dat": "739ee7a8495722bbb42a14cfc90e88928a17841af9c863f2c2b0b1e735f2b9ef",
-    "manifest.json": "814877a1bcd4c92f0c2cde0de5d890e649820266a5934bd97e6ae00c929b9625"
+    "manifest.json": "70c60f3514b65fab3746a2607d7b6ae1c5033c6f388ed4e6406c51db0c9c53f2"
   },
   "oriented": {
-    "manifest.json": "cebc05f8fb835072645dc1c1ac36221e54a23b9f3f533974fda98b2ae24a6eb6",
+    "manifest.json": "256629b0fb2551a43814593f44f5f2538316ca97ac0ed8ff4af2fc9c28443c02",
     "oriented/oriented.cal": "d55c098e38d07248a32b7a7f3e662ca081f7166abe8d5e485cdf5abaec9129fa",
     "oriented/oriented.hdr": "405a7885421d7c83e450588fd828a5ab83721cb3401f55093be172a9cfbab0b4",
     "oriented/oriented.rad": "8c0dc4e6578be6ffdeb7ec08cb3f311f7cb609cb31d9224bdf8c9be14d8158e5",
@@ -36,7 +36,7 @@
     "oriented/oriented_rough.dat": "08d2f48ceee42687633d4e293b6eb2bc869004e3b88249df31b6f17bdf517db2"
   },
   "rough16_set": {
-    "manifest.json": "6002c51c9fde5231b1ad2c2edb7fa18dca7e6820576a15d6ac50febe8b03555d",
+    "manifest.json": "1ac77ecf4d0494e432688807f8029e483bfb3a9853b3f114365dd8f39b0e4f0a",
     "rough16_set/rough16_set.cal": "48f813e3dd5634bbc201a6180093795ad6faa82e7d9b2b97b8c2b5300069bda7",
     "rough16_set/rough16_set.hdr": "3c5f752459709d9a5120021dd1ca7703db763e8b597f59b77682330ddc33a60c",
     "rough16_set/rough16_set.rad": "4dc2e89672af92ca9dd2fd7eed9903a95be0982016ba6de644a27e40f7f2832c",

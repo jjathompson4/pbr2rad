@@ -20,6 +20,7 @@ from .. import __version__
 from ..convert import ConvertOptions, convert_set, write_manifest
 from ..discover import PBRSet, discover
 from ..fetch import FetchError, download_texture_set
+from ..pvw import make_preview_png, write_pvw
 from . import tempdir
 from .limits import rate_limit, rate_limit_light
 from .models import (
@@ -106,13 +107,20 @@ def _build_pbrset_from_labels(
 
 
 _SKIP_EXTS = {".oct", ".bmp"}
-_SKIP_PREFIXES = {"preview_"}
+# render_preview() writes both "preview_*" (scene, filtered HDR) and "preview.*"
+# (octree, raw HDR, PNG) files into the material directory.  "preview." must be
+# covered too: preview.hdr otherwise ships next to the material's real
+# <name>.hdr albedo, where it reads as a texture map.
+_SKIP_PREFIXES = {"preview_", "preview."}
+# ...except the finished thumbnail, which is a deliverable in its own right.
+_KEEP_NAMES = {"preview.png"}
 
 
 def _zip_directory(directory: Path) -> io.BytesIO:
     """Zip a directory tree into an in-memory buffer.
 
-    Skips Radiance temp files (octrees, BMP intermediates) from preview rendering.
+    Skips Radiance temp files (octrees, HDR/BMP intermediates) from preview
+    rendering, but keeps the rendered preview.png thumbnail.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -120,10 +128,11 @@ def _zip_directory(directory: Path) -> io.BytesIO:
             if not f.is_file():
                 continue
             # Skip preview intermediates
-            if f.suffix in _SKIP_EXTS:
-                continue
-            if any(f.name.startswith(p) for p in _SKIP_PREFIXES):
-                continue
+            if f.name not in _KEEP_NAMES:
+                if f.suffix in _SKIP_EXTS:
+                    continue
+                if any(f.name.startswith(p) for p in _SKIP_PREFIXES):
+                    continue
             zf.write(f, f.relative_to(directory.parent))
     buf.seek(0)
     return buf
@@ -299,6 +308,18 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
         has_preview = render_preview(
             result.out_dir, result.rad_file, preview_png,
         )
+        # convert_set already wrote a .pvw from the albedo swatch; a real
+        # render of the material is a better thumbnail, so replace it.
+        if has_preview and result.pvw_file is not None:
+            try:
+                write_pvw(
+                    result.pvw_file, result.name, make_preview_png(preview_png)
+                )
+            except Exception:
+                log.warning(
+                    "could not refresh %s from render", result.pvw_file.name,
+                    exc_info=True,
+                )
     return result, has_preview
 
 

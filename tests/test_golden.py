@@ -116,10 +116,16 @@ def _run_case(case: str, work: Path) -> dict[str, str]:
 
     hashes: dict[str, str] = {}
     for f in sorted(out.rglob("*")):
-        if f.is_file():
-            hashes[f.relative_to(out).as_posix()] = hashlib.sha256(
-                f.read_bytes()
-            ).hexdigest()
+        if not f.is_file():
+            continue
+        # .pvw embeds a Pillow-encoded PNG, whose bytes shift with the Pillow
+        # version. Pinning it here would fail on every dependency bump for no
+        # signal; test_pvw.py checks its structure instead.
+        if f.suffix == ".pvw":
+            continue
+        hashes[f.relative_to(out).as_posix()] = hashlib.sha256(
+            f.read_bytes()
+        ).hexdigest()
     return hashes
 
 
