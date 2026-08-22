@@ -451,6 +451,10 @@ select, input, textarea {
 
 /* Output panel */
 .status { font-size: 0.85rem; color: var(--muted-2); margin-bottom: 0.75rem; }
+/* Heading row with the status on the right (Output panel) */
+.panel-head { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 0.75rem; }
+.panel-head h2 { margin-bottom: 0; }
+.panel-head .status { margin: 0 0 0 auto; text-align: right; }
 .status.error { color: var(--error); }
 .status.success { color: var(--success); }
 
@@ -487,24 +491,36 @@ select, input, textarea {
    is a flex column, so flex:1 here pushes the summary + Download button
    to the bottom of the card — mirroring the position of Fetch & Convert
    in the middle card. */
-/* Render (and optional reference) side by side — sized by width (square
-   tiles); the Output panel scrolls if the rest doesn't fit below. */
-.preview-pair {
+/* Render (and optional reference) side by side. Hidden until there is a
+   result, so the Output tabs sit at the same height as the Reference panel's
+   toggle on landing. With a result, the pair is sized by the panel's spare
+   height: it is the only flex item that shrinks, so the sliders / summary
+   never need to scroll on normal windows, and the images are never upscaled
+   past their native 384 px. */
+.preview-pair { display: none; }
+.preview-pair.has-preview {
   display: flex;
   gap: 0.75rem;
-  flex: 0 0 auto;
-  margin-bottom: 0.5rem;
+  flex: 0 1 auto;       /* the only item that shrinks: previews give way first */
+  min-height: 150px;
+  margin-bottom: 0.6rem;
 }
 .preview-fig {
   flex: 1 1 0;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   margin: 0;
 }
 .preview-fig img {
-  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  width: auto;
+  max-width: 100%;
+  max-height: 384px;
   aspect-ratio: 1 / 1;
   object-fit: contain;
   border-radius: 4px;
@@ -522,11 +538,11 @@ select, input, textarea {
 .preview-fig .preview-img.visible { display: block; }
 
 /* Output panel: fixed height, tabs, pinned Download */
-#output-panel { overflow: hidden; }
+#output-panel { overflow-y: auto; }   /* last-resort scroll only (see .out-panes) */
 .out-tabs {
   display: flex;
   gap: 0;
-  margin: 0.5rem 0 0.6rem;
+  margin: 0 0 0.6rem;
   flex: 0 0 auto;
 }
 .out-tab-btn {
@@ -545,9 +561,13 @@ select, input, textarea {
 .out-tab-btn:last-child  { border-radius: 0 4px 4px 0; }
 .out-tab-btn:hover { background: var(--control-hover); }
 .out-tab-btn.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-.out-panes { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.out-pane { display: none; }
-.out-pane.active { display: block; }
+/* Panes stacked in one grid cell: the block is always as tall as the tallest
+   tab, so switching tabs never resizes the previews. The panes never shrink;
+   on a window too short even for the minimum previews, the panel itself
+   scrolls as a last resort. */
+.out-panes { flex: 1 0 auto; display: grid; align-content: start; }
+.out-pane { grid-area: 1 / 1; visibility: hidden; pointer-events: none; }
+.out-pane.active { visibility: visible; pointer-events: auto; }
 .out-empty { font-size: 0.8rem; color: var(--muted-2); padding: 0.6rem 0.2rem; }
 .out-note { font-size: 0.72rem; color: var(--muted-2); margin-top: 0.5rem; }
 #download-btn { flex: 0 0 auto; }

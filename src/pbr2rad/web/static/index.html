@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=27">
+  <link rel="stylesheet" href="/static/style.css?v=29">
 </head>
 <body>
 
@@ -126,8 +126,10 @@
 
   <!-- Right: Output -->
   <div class="panel" id="output-panel">
-    <h2>Output</h2>
-    <div class="status" id="status">Ready</div>
+    <div class="panel-head">
+      <h2>Output</h2>
+      <div class="status" id="status">Ready</div>
+    </div>
     <!-- Render next to the source's own sphere render (when converting from
          the Browse panel) so the match can be judged at a glance. -->
     <div class="preview-pair" id="preview-pair">
@@ -270,6 +272,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=27"></script>
+<script src="/static/app.js?v=29"></script>
 </body>
 </html>
