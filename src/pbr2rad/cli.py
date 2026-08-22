@@ -120,10 +120,23 @@ def _build_fetch_parser(
     p: argparse.ArgumentParser | None = None,
 ) -> argparse.ArgumentParser:
     """Build (or populate) the fetch argument parser."""
+    from .sources import DEFAULT_SOURCE, SOURCES
+
     if p is None:
         p = argparse.ArgumentParser(prog="pbr2rad fetch")
-    p.add_argument("slug", help="Poly Haven asset slug (e.g. 'wood_floor_03')")
+    p.add_argument(
+        "slug",
+        metavar="asset",
+        help="Asset id for the chosen source "
+             "(Poly Haven slug e.g. 'wood_floor_03'; ambientCG id e.g. 'Bricks104').",
+    )
     p.add_argument("-o", "--output", type=Path, required=True, help="Output folder")
+    p.add_argument(
+        "--source",
+        choices=tuple(sorted(SOURCES)),
+        default=DEFAULT_SOURCE,
+        help=f"Texture source to fetch from (default: {DEFAULT_SOURCE}).",
+    )
     p.add_argument(
         "--resolution",
         choices=("1k", "2k"),
@@ -135,7 +148,7 @@ def _build_fetch_parser(
         dest="fmt",
         choices=("png", "jpg", "exr"),
         default="png",
-        help="Image format to download (default: png).",
+        help="Image format to download (default: png; ambientCG offers png/jpg only).",
     )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -219,10 +232,12 @@ def _run_convert(args: argparse.Namespace) -> int:
 
 
 def _run_fetch(args: argparse.Namespace) -> int:
-    from .fetch import FetchError, download_texture_set
+    from .fetch import FetchError
+    from .sources import DEFAULT_SOURCE, get_downloader
 
+    download = get_downloader(getattr(args, "source", DEFAULT_SOURCE))
     try:
-        mat_dir = download_texture_set(
+        mat_dir = download(
             args.slug,
             args.output,
             resolution=args.resolution,

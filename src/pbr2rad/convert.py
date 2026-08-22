@@ -16,6 +16,7 @@ from . import normal as normal_mod
 from . import pvw as pvw_mod
 from . import rad as rad_mod
 from .discover import PBRSet
+from .fetch import SIDECAR_NAME
 
 log = logging.getLogger("pbr2rad.convert")
 
@@ -78,6 +79,43 @@ class ConvertResult:
     # Channels synthesized from the albedo because the source set lacked
     # them ("normal", "roughness"). Never overlaps channels_used.
     channels_estimated: list[str] = field(default_factory=list)
+    # Provenance read from the fetcher's ``pbr2rad_source.json`` sidecar
+    # (source, asset_id, asset_url, license, …), or None for local sets.
+    source: dict | None = None
+
+
+def _read_source_sidecar(root: Path) -> dict | None:
+    """Return the provenance sidecar written by ``pbr2rad fetch``, if any.
+
+    Best-effort: a missing or malformed sidecar never fails a conversion.
+    """
+    try:
+        path = Path(root) / SIDECAR_NAME
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("generator") != "pbr2rad":
+        return None
+    if not data.get("source"):
+        return None
+    return data
+
+
+def _source_note(source: dict | None) -> str | None:
+    """One-line provenance for the .rad header, e.g.
+    ``ambientCG Bricks104 (CC0-1.0) https://ambientcg.com/a/Bricks104``."""
+    if not source:
+        return None
+    parts = [str(source.get("source_name") or source.get("source"))]
+    if source.get("asset_id"):
+        parts.append(str(source["asset_id"]))
+    if source.get("license"):
+        parts.append(f"({source['license']})")
+    if source.get("asset_url"):
+        parts.append(str(source["asset_url"]))
+    return " ".join(parts)
 
 
 def _apply_orientation(
@@ -218,7 +256,10 @@ def _convert_set_inner(
     avg_rgb = hdr_mod.average_rgb(pbr.albedo, srgb=True)
     channels_used.append("albedo")
 
-    # 3. Projection .cal
+    # 3. Projection .cal — the albedo's aspect feeds the colorpict lookup so
+    #    non-square textures (common on ambientCG, e.g. 1024x512) don't get
+    #    their picture sampled over half the tile while the .dat maps span it.
+    pic_u_scale, pic_v_scale = cal_mod.picture_scales(width, height)
     cal_text = cal_mod.generate(
         opts.projection,
         axis=opts.planar_axis,  # type: ignore[arg-type]
@@ -226,6 +267,8 @@ def _convert_set_inner(
         v_scale=opts.v_scale,
         u_offset=opts.u_offset,
         v_offset=opts.v_offset,
+        pic_u_scale=pic_u_scale,
+        pic_v_scale=pic_v_scale,
     )
     cal_file.write_text(cal_text, encoding="ascii")
 
@@ -307,12 +350,15 @@ def _convert_set_inner(
             rough_modulation=opts.rough_modulation,
         )
 
+    source = _read_source_sidecar(pbr.root)
+
     mat = rad_mod.MaterialParams(
         name=pbr.name,
         hdr_file=hdr_file.name,   # relative — resolved alongside the .rad file
         cal_file=cal_file.name,
         roughness=roughness,
         metalness=metalness,
+        source_note=_source_note(source),
         **normal_kwargs,
         **rough_kwargs,
     )
@@ -358,6 +404,7 @@ def _convert_set_inner(
         pvw_file=pvw_file,
         channels_used=channels_used,
         channels_estimated=channels_estimated,
+        source=source,
     )
 
 
@@ -391,6 +438,10 @@ def write_manifest(results: list[ConvertResult], out_root: Path) -> Path:
             "roughness": round(r.roughness, 4),
             "metalness": round(r.metalness, 4),
         })
+        # Provenance (source, asset_id, asset_url, license, …) when the set
+        # came from ``pbr2rad fetch``. Additive — omitted for local sets.
+        if getattr(r, "source", None):
+            entries[-1]["source"] = r.source
     manifest = {
         "generator": "pbr2rad",
         "version": 1,

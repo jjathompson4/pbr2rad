@@ -39,4 +39,6 @@ def test_colorpict_references_files() -> None:
         roughness=0.1, metalness=0.0,
     )
     out = generate(params)
-    assert "7 red green blue mat.hdr mat.cal u v" in out
+    # The picture lookup uses the aspect-scaled pic_u/pic_v from the .cal;
+    # the data modifiers keep u v.
+    assert "7 red green blue mat.hdr mat.cal pic_u pic_v" in out

@@ -140,6 +140,25 @@ def test_make_preview_png_centre_crops_rather_than_stretching(tmp_path: Path) ->
         assert out.getpixel((PVW_IMAGE_SIZE - 3, 128))[2] > 200  # still blue
 
 
+def test_make_preview_png_composites_alpha_over_background(tmp_path: Path) -> None:
+    """The web preview render is RGBA with a transparent surround; the .pvw
+    needs a flat colour there, not whatever RGB hides under alpha 0."""
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))          # transparent (black under)
+    for x in range(16, 48):
+        for y in range(16, 48):
+            img.putpixel((x, y), (200, 50, 50, 255))          # opaque red centre
+    src = tmp_path / "rgba.png"
+    img.save(src)
+
+    with Image.open(io.BytesIO(make_preview_png(src, background=(40, 40, 44)))) as out:
+        assert out.mode == "RGB"
+        assert out.getpixel((2, 2)) == (40, 40, 44)            # corner = background
+        assert out.getpixel((PVW_IMAGE_SIZE // 2, PVW_IMAGE_SIZE // 2))[0] > 180
+    # Without a background the alpha is simply dropped (legacy behaviour).
+    with Image.open(io.BytesIO(make_preview_png(src))) as out:
+        assert out.mode == "RGB"
+
+
 def test_make_preview_png_handles_grayscale_source(tmp_path: Path) -> None:
     src = tmp_path / "gray.png"
     Image.new("L", (64, 64), 128).save(src)

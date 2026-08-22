@@ -25,15 +25,30 @@ Requires Python 3.10+ and Pillow. No dependency on Blender, Rhino, or any GUI.
 
 ## Usage
 
-### Fetch materials from Poly Haven
+### Fetch materials from Poly Haven or ambientCG
 
 ```bash
-# Download a PBR texture set:
-pbr2rad fetch wood_floor -o /materials --resolution 2k -v
+# Download a Poly Haven texture set (the default source):
+pbr2rad fetch wood_floor_03 -o /materials --resolution 2k -v
 
-# Other resolutions / formats:
-pbr2rad fetch cobblestone_01 -o /materials --resolution 4k --format png
+# Download an ambientCG material (ids are case-insensitive; the folder
+# uses the canonical id, e.g. Bricks104):
+pbr2rad fetch --source ambientcg bricks104 -o /materials -v
+
+# Resolution is 1k (default) or 2k; format is png (default) or jpg
+# (Poly Haven also offers exr). ambientCG ships one zip per pack — only the
+# maps pbr2rad consumes (color, roughness, metalness, normal) are extracted.
+pbr2rad fetch --source ambientcg WoodFloor051 -o /materials --resolution 2k --format jpg
 ```
+
+Both sources are CC0. Every fetched folder gets a `pbr2rad_source.json`
+sidecar (source, asset id, asset URL, license, physical size when known)
+that `pbr2rad convert` carries into `manifest.json` and the `.rad` header.
+Non-square textures (common on ambientCG, e.g. 1024×512) are handled: the
+projection `.cal` scales the picture lookup by the aspect (`pic_u`/`pic_v`)
+so the albedo and the normal/roughness data stay aligned.
+Downloads are cached under `~/.cache/pbr2rad/<source>/`
+(`$PBR2RAD_CACHE_DIR` overrides the root).
 
 ### Convert to Radiance
 
@@ -104,9 +119,11 @@ working path against a real Rhino-exported office scene.
 
 ## Input
 
-A folder containing a PBR material set. Both Poly Haven and ambientCG naming
-conventions are recognised automatically, as is anything using the keywords
-`diff/albedo/color`, `rough`, `metal`, `nor`/`normal`, `disp`/`height`.
+A folder containing a PBR material set. Both Poly Haven
+(`wood_floor_03_diff_2k.png`) and ambientCG (`Bricks104_1K-JPG_Color.jpg`)
+naming conventions are recognised automatically, as is anything using the
+keywords `diff/albedo/color`, `rough`, `metal`, `nor`/`normal`,
+`disp`/`height`.
 
 ```
 wood_floor/
@@ -183,10 +200,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-78 tests covering: texture discovery, all five projection modes, material
+217 tests covering: texture discovery, all five projection modes, material
 generation (plastic/metal/normal/brightdata chains), RGBE encode/decode
 round-trip, RLE compression, sRGB-to-linear correctness, 16-bit PNG handling,
-Poly Haven API mocking, and end-to-end CLI runs.
+Poly Haven and ambientCG API mocking (incl. zip extraction safety), the web
+API, and end-to-end CLI runs.
 
 ## Visual verification
 
@@ -200,3 +218,32 @@ pbr2rad /tmp/materials/cobblestone_01 -o /tmp/rad --projection box --u-scale 3 -
 oconv /tmp/rad/cobblestone_01/cobblestone_01.rad scene.rad > scene.oct
 rpict [view args] scene.oct > out.hdr
 ```
+
+## Running the web UI (dev notes)
+
+```bash
+PYTHONPATH=src .venv/bin/python -m uvicorn pbr2rad.web.app:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+Then open <http://127.0.0.1:8000/>.
+
+### Why the `PYTHONPATH=src` prefix?
+
+On this machine, something at the OS level (likely Spotlight/quarantine or a
+similar daemon) sets the macOS `hidden` flag on `.pth` files inside the venv
+~1 second after they're created or cleared. Python 3.13's `site.py` skips
+`.pth` files marked hidden (UF_HIDDEN), so the editable install of `pbr2rad`
+isn't picked up automatically and `import pbr2rad` fails with
+`ModuleNotFoundError`.
+
+Things that did **not** stick:
+- `chflags nohidden …__editable__.pbr2rad-0.1.0.pth` — re-hidden within ~1s.
+- Renaming the `.pth` file to something without the `__editable__` prefix —
+  still re-hidden.
+- `xattr -c` to strip `com.apple.provenance` — still re-hidden.
+- `pip install -e . --config-settings editable_mode=compat` — setuptools
+  still emits the same filename.
+
+Workaround: launch with `PYTHONPATH=src` so the import works regardless of
+whether the `.pth` file is being honored. The non-editable case (`pip install .`)
+is unaffected since it doesn't rely on a `.pth` file.

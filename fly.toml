@@ -11,6 +11,14 @@ swap_size_mb = 512
 [build]
   # Uses the Dockerfile in this directory.
 
+[env]
+  # Warm the texture catalogs (ambientCG first — it's the landing source and
+  # ~12 s cold) in a background thread at boot instead of on the first search.
+  PBR2RAD_PREFETCH_CATALOGS = "1"
+  # Ceiling for ~/.cache/pbr2rad (Poly Haven maps, ambientCG packs + map
+  # thumbnails, catalogs). Least-recently-modified files are evicted past it.
+  PBR2RAD_CACHE_MAX_MB = "1024"
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -28,3 +36,9 @@ swap_size_mb = 512
 [[vm]]
   size = "shared-cpu-1x"
   memory = "1gb"   # headroom for Pillow on 2048px maps + Radiance previews
+  # Keep the rootfs (and with it the download cache + catalogs) across
+  # auto-stop/start AND deploys. Without this every idle->stop->start wipes
+  # the cache, so catalogs are rebuilt upstream on every wake and every pack
+  # is re-downloaded. Stopped-rootfs storage is billed per GB; the cache is
+  # capped by PBR2RAD_CACHE_MAX_MB above.
+  persist_rootfs = "always"

@@ -78,8 +78,9 @@ fly certs check pbr2rad.com
 
 ### 5. Smoke test
 
-Open https://pbr2rad.com — the UI should load, a Poly Haven fetch and a
-convert should round-trip, and `/api/v1/health` should return OK.
+Open https://pbr2rad.com — the UI should load, a Poly Haven fetch and an
+ambientCG fetch (Browse tab → source toggle) should each round-trip through
+convert, and `/api/v1/health` should return OK.
 
 ## Notes
 
@@ -91,8 +92,28 @@ convert should round-trip, and `/api/v1/health` should return OK.
   second layer, Cloudflare → Security → WAF rate-limiting rules.
 - **Upload cap**: the API caps requests at 80 MB, under Cloudflare's
   100 MB proxied-request limit on the free plan.
-- **Single instance assumption**: the in-memory rate limiter and Poly
-  Haven cache are per-instance. Keep `count = 1` (the default) unless
-  those move to a shared store.
-- **Redeploys**: just `fly deploy` after changes. The Poly Haven disk
-  cache is ephemeral and resets on redeploy; it repopulates on use.
+- **Single instance assumption**: the in-memory rate limiter and the
+  per-source catalog caches (Poly Haven, ambientCG) are per-instance.
+  Keep `count = 1` (the default) unless those move to a shared store.
+- **Redeploys**: just `fly deploy` after changes. The per-source disk
+  caches (`~/.cache/pbr2rad/<source>/`: downloaded maps/zips and the
+  catalog JSON) are ephemeral and reset on redeploy; they repopulate on
+  use. The ambientCG catalog is ~5 paged API calls (~15 MB, ~12 s cold);
+  `fly.toml` sets `PBR2RAD_PREFETCH_CATALOGS = "1"` so the app warms it (and
+  Poly Haven's) in a background thread at boot instead of on the first
+  search. Catalogs are cached 6 h (ambientCG) / 1 h (Poly Haven) and served
+  stale if the upstream API is down.
+- **ambientCG map thumbnails**: the first `/info` for an ambientCG asset
+  downloads its 1K-JPG pack (4–10 MB) into the cache to build per-map
+  thumbnails; the later convert reuses it. These downloads are throttled
+  process-wide (burst 30, then 3/min, ≤ 2 concurrent) and skipped once the
+  cache exceeds 2 GB, so browsing can't turn the site into a bulk
+  downloader.
+- **Rootfs + cache**: the machine's rootfs is ephemeral (~8 GB, slow) and
+  with Fly's default is *reset on every auto-stop*. `fly.toml` sets
+  `persist_rootfs = "always"` so the download cache and catalogs survive
+  stop/start and deploys; `PBR2RAD_CACHE_MAX_MB = "1024"` caps the cache
+  with least-recently-modified eviction (catalogs exempt), enforced at
+  boot, every 10 min and after each download. Stopped-rootfs storage is
+  billed per GB, so the cap also bounds that cost. Temp job dirs are still
+  swept after 30 min.

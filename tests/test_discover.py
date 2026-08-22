@@ -44,6 +44,38 @@ def test_ambientcg_naming(tmp_path: Path) -> None:
     assert pbr.normal is not None
 
 
+def test_ambientcg_new_naming(tmp_path: Path) -> None:
+    """Current ambientCG packs embed the format in the name: Id_1K-JPG_Map.jpg."""
+    root = tmp_path / "Bricks104"
+    for name in (
+        "Bricks104_1K-JPG_Color.jpg",
+        "Bricks104_1K-JPG_NormalGL.jpg",
+        "Bricks104_1K-JPG_NormalDX.jpg",
+        "Bricks104_1K-JPG_Roughness.jpg",
+        "Bricks104_1K-JPG_Displacement.jpg",
+        "Bricks104_1K-JPG_AmbientOcclusion.jpg",
+        "Bricks104_1K-JPG_Metalness.jpg",
+        "Bricks104_1K-JPG_Opacity.jpg",
+        "Bricks104_1K-JPG_Emission.jpg",
+        "Bricks104.mtlx",
+    ):
+        _touch(root / name)
+
+    pbr = discover(root)
+    assert pbr.name == "Bricks104"
+    assert pbr.albedo.name == "Bricks104_1K-JPG_Color.jpg"
+    assert pbr.maps["normal_gl"].name == "Bricks104_1K-JPG_NormalGL.jpg"
+    assert pbr.maps["normal_dx"].name == "Bricks104_1K-JPG_NormalDX.jpg"
+    assert pbr.normal.name == "Bricks104_1K-JPG_NormalGL.jpg"  # GL preferred
+    assert pbr.roughness.name == "Bricks104_1K-JPG_Roughness.jpg"
+    assert pbr.metalness.name == "Bricks104_1K-JPG_Metalness.jpg"
+    assert pbr.maps["displacement"].name == "Bricks104_1K-JPG_Displacement.jpg"
+    assert pbr.maps["ao"].name == "Bricks104_1K-JPG_AmbientOcclusion.jpg"
+    # Unknown channels and non-image extras are kept out of the map set.
+    extras = sorted(p.name for p in pbr.extras)
+    assert extras == ["Bricks104_1K-JPG_Emission.jpg", "Bricks104_1K-JPG_Opacity.jpg"]
+
+
 def test_highest_resolution_wins(tmp_path: Path) -> None:
     root = tmp_path / "stone"
     _touch(root / "stone_diff_1k.png")
