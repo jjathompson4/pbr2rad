@@ -94,9 +94,11 @@ def _build_convert_parser(
         help="Normal map perturbation strength (default: 1.0).",
     )
     p.add_argument(
-        "--no-varying-roughness",
+        "--varying-roughness",
         action="store_true",
-        help="Use mean roughness instead of spatially varying roughness map.",
+        help="Opt-in: emit a brightdata pattern from the roughness map. NOTE: a "
+             "Radiance pattern scales the material colour (diffuse reflectance), not "
+             "its roughness, so this darkens rough areas; off by default.",
     )
     p.add_argument(
         "--no-estimate",
@@ -176,7 +178,7 @@ def _run_convert(args: argparse.Namespace) -> int:
         metalness_override=args.metalness,
         normal=not args.no_normal,
         bump_scale=args.bump_scale,
-        varying_roughness=not args.no_varying_roughness,
+        varying_roughness=args.varying_roughness,
         estimate_maps=not args.no_estimate,
         write_pvw=not args.no_pvw,
     )

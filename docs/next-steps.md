@@ -52,7 +52,7 @@ Design-doc scope coverage:
 | Spherical projection       | done    |
 | Albedo -> colorpict        | done    |
 | Roughness (mean)           | done    |
-| Roughness (spatially vary) | done (brightdata) |
+| Roughness (spatially vary) | legacy opt-in (brightdata scales diffuse, not roughness); true varying roughness = mixdata of two plastics (todo) |
 | Metalness (plastic/metal)  | done    |
 | Normal map                 | done (texdata, GL/DX) |
 | Manifest                   | done    |
@@ -117,17 +117,18 @@ Files potentially touched:
    regardless of what the maps suggest. Add to `ConvertOptions.primitive`
    (currently implicit); thread through `rad.py::generate`.
 
-2. **Roughness / specularity slider with live preview.** Slider
-   (0.0–1.0) next to the existing "Roughness Override" field. As the
-   user drags it, re-issue a lightweight preview render (material-only
-   swap, skip re-downloading / re-HDR'ing the source) and update the
-   output image. Needs a debounced endpoint that takes an existing
-   job_id and just rewrites the `.rad` + re-renders `preview.png`
-   without touching `.hdr` / `.dat` files.
+2. ~~Roughness / specularity slider with live preview~~ — done (2026-08):
+   "Tune material" sliders (specularity, roughness, diffuse ×) in the
+   Output card call `POST /api/v1/jobs/{job_id}/rerender`, which
+   re-converts the job's kept source maps with overrides (the `.hdr`
+   must be re-baked when specularity/diffuse change) and re-renders the
+   preview in a few seconds. Job state lives in `<job>/job.json`.
 
 3. **Metalness slider with live preview.** Same pattern as (2) but for
-   metalness. Crossing 0.5 should also swap the primitive (tie into
-   item 1 so the user sees plastic → metal transition live).
+   metalness (`metalness_override` already exists in `ConvertOptions`);
+   crossing 0.5 swaps the primitive (tie into item 1 so the user sees
+   plastic → metal transition live). Add a fourth slider to the Tune
+   panel once the primitive override (1) exists.
 
 4. **Preview geometry picker (plane / sphere / box).** Current preview
    always renders on a tilted flat plane — good for reading the texture

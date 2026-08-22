@@ -30,28 +30,60 @@ log = logging.getLogger("pbr2rad.web")
 _CAM_VP = (2.6, -2.9, 2.1)
 _CAM_VD = (-0.584, 0.652, -0.472)
 _CAM_VU = (0.0, 0.0, 1.0)
-_CAM_FOV_DEG = 42.0
+_CAM_FOV_DEG = 27.5            # sphere fills ~95 % of the frame, like the source renders (~96 %)
 _SPHERE_RADIUS = 1.0
 
-# Neutral environment the sphere reflects: a dim glow covering the lower
-# hemisphere of directions (the upper one is the sky ``light`` source). As a
-# distant ``source`` it can't shadow the key/fill/sky lights (an enclosing
-# glow sphere would), it is invisible to the direct calculation (glow,
-# maxrad 0) but seen by specular and ambient rays, so metals and glossy
-# materials get a lit body instead of reflecting a black void. The camera
-# looks down, so it also forms the background — which is masked out below.
-ENV_RADIANCE = (0.06, 0.06, 0.066)
+# Light rig — deliberately NEUTRAL (R = G = B for every light) so that a grey
+# card renders grey and a material's own colour is what the user sees. The
+# previous rig (warm key, cool fill, blue sky) integrated to an irradiance of
+# roughly (0.81, 1.00, 1.37) on any surface — every preview had a blue cast
+# and warm materials read as desaturated grey. Shapes are kept: a key from
+# upper-front-left (now a larger, softer disc so highlights aren't a hot
+# pin-point), a broad fill from the right, a sky hemisphere above, and a dim
+# glow hemisphere below for reflections/ambient (a distant ``source`` so it
+# can't shadow the lights; it also forms the background, masked out later).
+# ``rig_irradiance`` computes the rig's colour balance and is unit-tested.
+# v4 (round 5): two broad soft discs (``light`` — they drive the direct
+# calculation) in a dim neutral surround made of two ``glow`` hemispheres
+# (sky above, env below). Glow is the right primitive for the surround: it is
+# what specular rays see (so chrome reflects a sky and an env instead of
+# black — ``light`` sources are invisible to reflected rays) and the ambient
+# pass picks it up for diffuse fill, exactly how gensky skies work. The
+# source renders are lit by large soft lights, so diffuse shading is flat
+# (top/bottom ≈ 1.2) and chrome reads as a dark body with soft reflections.
+# Calibrated against ambientCG reference spheres (see CHANGELOG).
+KEY_RADIANCE = (2.4, 2.4, 2.4)
+KEY_DIR = (-0.6, -0.6, 0.8)
+KEY_ANGLE_DEG = 40.0
+FILL_RADIANCE = (1.4, 1.4, 1.4)
+FILL_DIR = (0.7, -0.5, 0.3)
+FILL_ANGLE_DEG = 50.0
+SKY_RADIANCE = (0.10, 0.10, 0.10)       # +z hemisphere (glow)
+ENV_RADIANCE = (0.06, 0.06, 0.06)       # -z hemisphere (glow)
 
 # ---------------------------------------------------------------------------
-# Exposure. Targets are display-linear (ra_bmp applies the 2.2 gamma after).
+# Exposure. Default is FIXED, derived from the rig, so brightness encodes
+# reflectance the way the source renders do (white tiles bright, dark fabric
+# dark): a camera-facing diffuse surface with albedo a lands at
+# EXPOSURE_ALBEDO_GAIN × a in display-linear before ra_bmp's 2.2 gamma.
+# PBR2RAD_PREVIEW_EXPOSURE=auto re-enables the per-render percentile
+# exposure (useful for diagnosing very dark materials; not comparable
+# across materials). Targets are display-linear.
 # ---------------------------------------------------------------------------
-EXPOSURE_FALLBACK = 2 ** 1.4   # the fixed "+1.4 stops" used before auto-exposure
-EXPOSURE_T_MID = 0.27          # median sphere luminance → ~0.55 after gamma
-EXPOSURE_T_HI = 0.94           # 95th percentile → ~0.97; the top 5% may clip
+EXPOSURE_ALBEDO_GAIN = 1.30    # calibrated: ambientCG references sit ≈ 1.25–1.35 × albedo (display-linear)
+EXPOSURE_FALLBACK = 2 ** 1.4   # the fixed "+1.4 stops" used before round 3
+EXPOSURE_T_MID = 0.32          # auto mode: median sphere luminance → ~0.6 after gamma
+EXPOSURE_T_HI = 0.94           # auto mode: 95th percentile → ~0.97; the top 5% may clip
 EXPOSURE_MIN = 0.5
 EXPOSURE_MAX = 32.0
 _MASK_SHRINK = 0.92            # measure inside the rim, away from AA edge pixels
 _EDGE_FEATHER_PX = 1.5         # alpha ramp width around the silhouette
+
+# Display-only "look": the source sites' sphere renders carry a mild
+# saturation boost over the albedo itself (~1.35–1.5× on wood/brick, none on
+# neutrals). A modest boost on the preview PNG keeps our render comparable
+# without touching the .rad/.hdr or the readout. Neutrals are unaffected.
+PREVIEW_SATURATION = 1.25
 
 
 @functools.lru_cache(maxsize=1)
@@ -62,6 +94,82 @@ def radiance_available() -> bool:
     Radiance into the image), and this sits on the health-check hot path.
     """
     return shutil.which("rpict") is not None and shutil.which("oconv") is not None
+
+
+def _unit(v) -> tuple[float, float, float]:
+    n = math.sqrt(sum(c * c for c in v)) or 1.0
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def rig_irradiance(normal) -> tuple[float, float, float]:
+    """Approximate irradiance (R, G, B) the rig delivers to a Lambertian
+    surface with the given normal — disc sources as L·Ω·cosθ, hemispheres as
+    L·π·(1+cosθ)/2. Used to keep the rig white-balanced (see tests)."""
+    n = _unit(normal)
+
+    def disc(radiance, direction, full_angle_deg):
+        d = _unit(direction)
+        omega = math.pi * math.sin(math.radians(full_angle_deg / 2.0)) ** 2
+        cos = max(0.0, sum(a * b for a, b in zip(n, d)))
+        return [c * omega * cos for c in radiance]
+
+    def hemi(radiance, axis):
+        a = _unit(axis)
+        cos = sum(x * y for x, y in zip(n, a))
+        return [c * math.pi * max(0.0, (1.0 + cos) / 2.0) for c in radiance]
+
+    parts = [
+        disc(KEY_RADIANCE, KEY_DIR, KEY_ANGLE_DEG),
+        disc(FILL_RADIANCE, FILL_DIR, FILL_ANGLE_DEG),
+        hemi(SKY_RADIANCE, (0.0, 0.0, 1.0)),
+        hemi(ENV_RADIANCE, (0.0, 0.0, -1.0)),
+    ]
+    return tuple(sum(p[i] for p in parts) for i in range(3))
+
+
+def rig_neutrality(normal) -> float:
+    """max/min channel ratio of the rig's irradiance (1.0 = perfectly neutral)."""
+    e = rig_irradiance(normal)
+    lo = min(e)
+    return (max(e) / lo) if lo > 0 else float("inf")
+
+
+def _camera_facing_normal() -> tuple[float, float, float]:
+    return _unit(tuple(-c for c in _CAM_VD))
+
+
+def fixed_exposure() -> float:
+    """Exposure multiplier so that a camera-facing diffuse surface of albedo
+    ``a`` renders at ``EXPOSURE_ALBEDO_GAIN × a`` (display-linear): radiance is
+    a·E/π, so k = gain·π/E using the rig's photopic irradiance."""
+    e = rig_irradiance(_camera_facing_normal())
+    e_vis = 0.265 * e[0] + 0.670 * e[1] + 0.065 * e[2]
+    if e_vis <= 0:
+        return EXPOSURE_FALLBACK
+    return EXPOSURE_ALBEDO_GAIN * math.pi / e_vis
+
+
+def exposure_mode() -> str:
+    """``"fixed"`` (default) or ``"auto"`` via $PBR2RAD_PREVIEW_EXPOSURE."""
+    return "auto" if os.environ.get("PBR2RAD_PREVIEW_EXPOSURE", "").lower() == "auto" else "fixed"
+
+
+def apply_look(img, saturation: float = PREVIEW_SATURATION):
+    """Display-only look for the preview PNG (RGBA): mild saturation boost.
+
+    Operates on colour only (PIL ImageEnhance.Color blends with the luma
+    image), so greys stay grey and alpha is preserved.
+    """
+    from PIL import Image, ImageEnhance
+
+    if abs(saturation - 1.0) < 1e-6:
+        return img
+    rgba = img.convert("RGBA")
+    rgb = rgba.convert("RGB")
+    rgb = ImageEnhance.Color(rgb).enhance(saturation)
+    out = rgb.convert("RGBA")
+    out.putalpha(rgba.getchannel("A"))
+    return out
 
 
 def sphere_disk_radius(size: int) -> float:
@@ -136,21 +244,27 @@ def _read_luminance(hdr: Path, size: int, env: dict) -> np.ndarray | None:
 
 
 def _scene_text(name: str) -> str:
-    """The preview scene: unit sphere, three-point lights, sky + env hemispheres."""
-    er, eg, eb = ENV_RADIANCE
+    """The preview scene: unit sphere, key + fill discs, sky + env hemispheres."""
+    def rgb(c):
+        return f"{c[0]:g} {c[1]:g} {c[2]:g}"
+
+    def xyz(v):
+        return f"{v[0]:g} {v[1]:g} {v[2]:g}"
+
     return (
         f"{name} sphere ball\n0\n0\n4 0 0 0 {_SPHERE_RADIUS:g}\n\n"
-        # Key light (warm, upper-front-left) - main shading source
-        "void light key_l\n0\n0\n3 5.0 4.5 4.0\n\n"
-        "key_l source key\n0\n0\n4 -0.6 -0.6 0.8 8\n\n"
-        # Fill light (cool, lower-front-right) - softens shadows
-        "void light fill_l\n0\n0\n3 1.0 1.2 1.5\n\n"
-        "fill_l source fill\n0\n0\n4 0.7 -0.5 0.3 30\n\n"
-        # Sky dome - hemispherical environment ambient (replaces HDRI)
-        "void light sky_dome\n0\n0\n3 0.4 0.5 0.7\n\n"
-        "sky_dome source sky\n0\n0\n4 0 0 1 180\n\n"
+        # Key light (upper-front-left) - main shading source, broad soft disc
+        f"void light key_l\n0\n0\n3 {rgb(KEY_RADIANCE)}\n\n"
+        f"key_l source key\n0\n0\n4 {xyz(KEY_DIR)} {KEY_ANGLE_DEG:g}\n\n"
+        # Fill light (front-right) - broad, softens shadows
+        f"void light fill_l\n0\n0\n3 {rgb(FILL_RADIANCE)}\n\n"
+        f"fill_l source fill\n0\n0\n4 {xyz(FILL_DIR)} {FILL_ANGLE_DEG:g}\n\n"
+        # Sky hemisphere - dim neutral glow: seen by reflections, lights the
+        # diffuse via the ambient pass (like a gensky sky), never shadows.
+        f"void glow sky_g\n0\n0\n4 {rgb(SKY_RADIANCE)} 0\n\n"
+        "sky_g source sky\n0\n0\n4 0 0 1 180\n\n"
         # Lower hemisphere: dim neutral glow for reflections / ambient only
-        f"void glow env_g\n0\n0\n4 {er:g} {eg:g} {eb:g} 0\n\n"
+        f"void glow env_g\n0\n0\n4 {rgb(ENV_RADIANCE)} 0\n\n"
         "env_g source env\n0\n0\n4 0 0 -1 180\n"
     )
 
@@ -224,13 +338,16 @@ def render_preview(
                 check=True, timeout=60, env=env,
             )
 
-        # Auto-exposure from the sphere's own pixels (the surround is the
-        # env glow / void and must not drive the exposure).
-        exposure = EXPOSURE_FALLBACK
-        lum = _read_luminance(hdr, size, env)
-        if lum is not None:
-            exposure = auto_exposure(lum[sphere_mask(size)])
-        log.debug("preview exposure for %s: %.3g", name, exposure)
+        # Exposure: fixed (derived from the rig, comparable across materials)
+        # unless auto mode is requested; auto measures the sphere's own pixels.
+        if exposure_mode() == "auto":
+            exposure = EXPOSURE_FALLBACK
+            lum = _read_luminance(hdr, size, env)
+            if lum is not None:
+                exposure = auto_exposure(lum[sphere_mask(size)])
+        else:
+            exposure = fixed_exposure()
+        log.debug("preview exposure for %s: %.3g (%s)", name, exposure, exposure_mode())
 
         # Convert to PNG via pfilt + ra_bmp + Pillow
         filtered = work / "preview_filt.hdr"
@@ -251,6 +368,7 @@ def render_preview(
             rgba = img.convert("RGBA")
             if rgba.size == (size, size):
                 rgba.putalpha(Image.fromarray(sphere_alpha(size), mode="L"))
+            rgba = apply_look(rgba)
             rgba.save(output_png)
         return True
 

@@ -22,7 +22,9 @@ class ConvertOptionsRequest(BaseModel):
     metalness_override: float | None = None
     normal: bool = True
     bump_scale: float = 1.0
-    varying_roughness: bool = True
+    # Roughness-map brightdata modulation: opt-in (it darkens the diffuse —
+    # see ConvertOptions.varying_roughness).
+    varying_roughness: bool = False
     rough_modulation: float = 0.8
     estimate_maps: bool = True
     rotate_per_map: dict[str, int] = Field(default_factory=dict)
@@ -31,6 +33,27 @@ class ConvertOptionsRequest(BaseModel):
     # Web default caps .dat emission at 512px — visually indistinguishable
     # for normal/roughness perturbation, 16x smaller output, much faster.
     dat_resolution: int | None = Field(default=512, ge=64, le=2048)
+    # Material tuning (also driven post-hoc by the Output panel sliders via
+    # /jobs/{id}/rerender): specular reflectance override (plastic default
+    # 0.05, metal 1.0) and a multiplier on the albedo.
+    specularity_override: float | None = Field(default=None, ge=0.0, le=1.0)
+    diffuse_scale: float = Field(default=1.0, ge=0.25, le=2.0)
+
+
+class RerenderRequest(BaseModel):
+    """Body for ``POST /jobs/{job_id}/rerender`` — only the given fields change;
+    omitted ones keep the job's stored values."""
+    specularity: float | None = Field(default=None, ge=0.0, le=1.0)
+    roughness: float | None = Field(default=None, ge=0.0, le=1.0)
+    metalness: float | None = Field(default=None, ge=0.0, le=1.0)
+    diffuse_scale: float | None = Field(default=None, ge=0.25, le=2.0)
+    # Pass true to drop a stored specularity override (back to the primitive
+    # default) — used when the metalness slider flips plastic <-> metal.
+    reset_specularity: bool = False
+    # Full conversion settings (projection, scales, maps, …) to re-render
+    # with; when given they replace the job's stored base options and the
+    # material fields above are applied on top.
+    options: ConvertOptionsRequest | None = None
 
 
 class ChannelMap(BaseModel):
@@ -99,6 +122,17 @@ class ConvertResponse(BaseModel):
     # public page, when the job fetched from a texture source (None for uploads).
     source: str | None = None
     source_url: str | None = None
+    # Material characteristics as emitted (effective values after overrides):
+    # specular reflectance, Radiance roughness (alpha = perceptual²), the
+    # diffuse multiplier in force, and the photopic reflectance split
+    # {diffuse_rgb, specular_rgb, diffuse_vis, specular_vis, total_vis}.
+    specularity: float | None = None
+    roughness_radiance: float | None = None
+    diffuse_scale: float = 1.0
+    reflectance: dict | None = None
+    avg_srgb_hex: str | None = None
+    # Physical size of one texture tile when the source publishes it.
+    dimensions_cm: list[float] | None = None
 
 
 class HealthResponse(BaseModel):

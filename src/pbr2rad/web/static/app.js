@@ -68,33 +68,59 @@ window.addEventListener("DOMContentLoaded", () => {
   searchCatalog("");
 });
 
-// Settings-mode toggle: Default keeps the advanced panel hidden (and the
-// defaults apply); Advanced reveals it. The toggle is purely UI — values
-// in the advanced panel stay at their defaults until the user changes them.
-document.querySelectorAll(".mode-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".mode-btn").forEach(b => {
-      b.classList.remove("active");
-      b.setAttribute("aria-selected", "false");
-    });
-    btn.classList.add("active");
-    btn.setAttribute("aria-selected", "true");
-    const showAdvanced = btn.dataset.mode === "advanced";
-    document.getElementById("advanced-options").hidden = !showAdvanced;
-  });
+// Conversion settings (Maps & Projection tab): a change applies to the next
+// conversion and, when a result is showing, re-renders it.
+document.getElementById("advanced-options").addEventListener("change", () => {
+  if (currentJob) scheduleRerender();
 });
 
-// Show/hide planar axis based on projection
+// Planar axis only means something for planar projection
 document.getElementById("opt-projection").addEventListener("change", e => {
-  document.getElementById("opt-axis-group").style.display =
-    e.target.value === "planar" ? "block" : "none";
+  document.getElementById("opt-planar-axis").disabled = e.target.value !== "planar";
 });
 
-// Show/hide bump scale based on normal checkbox
-document.getElementById("opt-normal").addEventListener("change", e => {
-  document.getElementById("opt-bump-group").style.display =
-    e.target.checked ? "block" : "none";
+// The Bump slider (Override Properties) only applies when the normal map is used
+document.getElementById("opt-normal").addEventListener("change", syncBumpEnabled);
+
+// Tooltips: one fixed-position bubble for every [data-tip] (hover or focus),
+// positioned in JS so the scrolling tab pane can't clip it.
+const tipEl = document.createElement("div");
+tipEl.id = "tooltip";
+tipEl.setAttribute("role", "tooltip");
+document.body.appendChild(tipEl);
+function showTip(el) {
+  tipEl.textContent = el.dataset.tip;
+  tipEl.style.left = "0px";
+  tipEl.style.top = "0px";
+  tipEl.classList.add("show");
+  const r = el.getBoundingClientRect();
+  const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+  const x = Math.max(8, Math.min(r.left + r.width / 2 - tw / 2, innerWidth - tw - 8));
+  let y = r.top - th - 8;
+  if (y < 8) y = r.bottom + 8;
+  tipEl.style.left = x + "px";
+  tipEl.style.top = y + "px";
+}
+function hideTip() { tipEl.classList.remove("show"); }
+const tipTarget = e => (e.target && e.target.closest) ? e.target.closest("[data-tip]") : null;
+document.addEventListener("mouseover", e => { const t = tipTarget(e); if (t) showTip(t); });
+document.addEventListener("mouseout", e => { const t = tipTarget(e); if (t && !t.contains(e.relatedTarget)) hideTip(); });
+document.addEventListener("focusin", e => { const t = tipTarget(e); if (t) showTip(t); });
+document.addEventListener("focusout", hideTip);
+document.addEventListener("scroll", hideTip, true);
+
+// Output tabs
+document.querySelectorAll(".out-tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => selectOutTab(btn.dataset.outTab));
 });
+function selectOutTab(name) {
+  document.querySelectorAll(".out-tab-btn").forEach(b => {
+    const on = b.dataset.outTab === name;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll(".out-pane").forEach(p => p.classList.toggle("active", p.id === "out-tab-" + name));
+}
 
 // ---------------------------------------------------------------------------
 // File upload + drag-and-drop
@@ -186,7 +212,7 @@ document.getElementById("convert-btn").addEventListener("click", async () => {
     });
     if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
-    showResult(data);
+    showResult(data, null);
   } catch (err) {
     setStatus("Error: " + errMessage(err), "error");
   } finally {
@@ -510,7 +536,7 @@ document.getElementById("ph-convert-btn").addEventListener("click", async () => 
 
     if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
-    showResult(data);
+    showResult(data, selectedItem);
   } catch (err) {
     setStatus("Error: " + errMessage(err), "error");
   } finally {
@@ -531,19 +557,15 @@ function getOptions() {
     u_offset: parseFloat(document.getElementById("opt-u-offset").value) || 0,
     v_offset: parseFloat(document.getElementById("opt-v-offset").value) || 0,
     normal: document.getElementById("opt-normal").checked,
-    bump_scale: parseFloat(document.getElementById("opt-bump-scale").value) || 1,
+    bump_scale: sliderVal("tune-bump"),   // Bump slider, Override Properties tab
     varying_roughness: document.getElementById("opt-varying-rough").checked,
     rotate_per_map: { ...phRotatePerMap },
     flip_h: document.getElementById("opt-flip-h").checked,
     flip_v: document.getElementById("opt-flip-v").checked,
   };
 
-  const roughVal = document.getElementById("opt-roughness").value;
-  if (roughVal !== "") opts.roughness_override = parseFloat(roughVal);
-
-  const metalVal = document.getElementById("opt-metalness").value;
-  if (metalVal !== "") opts.metalness_override = parseFloat(metalVal);
-
+  // Specularity / roughness / metalness / diffuse are tuned after conversion
+  // in the Output panel (see rerender()).
   return opts;
 }
 
@@ -557,40 +579,226 @@ function setStatus(msg, type = "") {
   el.className = "status " + type;
 }
 
-function showResult(data) {
-  setStatus("Conversion complete!", "success");
+// The last conversion (for the tune sliders) and the catalog item it came
+// from (for the side-by-side reference render).
+let currentJob = null;      // { id, data, base }
+let currentRefItem = null;
 
-  // Preview
+const PHOTOPIC = [0.265, 0.670, 0.065];
+function visible(rgb) { return PHOTOPIC[0] * rgb[0] + PHOTOPIC[1] * rgb[1] + PHOTOPIC[2] * rgb[2]; }
+function pct(v) { return (v * 100).toFixed(1).replace(/\.0$/, "") + "%"; }
+function fmt3(v) { return Number(v).toFixed(3); }
+
+function showResult(data, refItem, opts = {}) {
+  setStatus(opts.statusText || "Conversion complete!", "success");
+  const base = currentJob && currentJob.base;
+  currentJob = { id: data.job_id, data, base };
+  if (refItem !== undefined) currentRefItem = refItem;
+
+  // Preview (+ reference render when the material came from the Browse panel)
   const previewImg = document.getElementById("preview-img");
+  const cap = document.getElementById("preview-cap");
   if (data.preview_url) {
     previewImg.src = data.preview_url;
     previewImg.classList.add("visible");
+    cap.style.display = "block";
   } else {
     previewImg.classList.remove("visible");
+    cap.style.display = "none";
+  }
+  const refFig = document.getElementById("preview-ref-fig");
+  const refImg = document.getElementById("preview-ref-img");
+  if (currentRefItem && heroFor(currentRefItem) && data.preview_url) {
+    refImg.src = heroFor(currentRefItem);
+    const label = (SOURCES[data.source] && SOURCES[data.source].label) || "Source";
+    document.getElementById("preview-ref-cap").textContent = label + " render";
+    refFig.style.display = "flex";
+  } else {
+    refFig.style.display = "none";
   }
 
-  // Summary
+  // Summary tab — what the converted material IS (Radiance semantics). Name,
+  // source and physical size already live on the reference card.
   const dl = document.getElementById("result-summary");
-  const [r, g, b] = data.avg_rgb.map(v => Math.round(Math.pow(v, 1/2.2) * 255));
-  dl.innerHTML = `
-    <dt>Material</dt><dd>${data.name}</dd>
-    <dt>Primitive</dt><dd>${data.primitive}</dd>
-    <dt>Roughness</dt><dd>${data.roughness.toFixed(3)}</dd>
-    <dt>Metalness</dt><dd>${data.metalness.toFixed(3)}</dd>
-    <dt>Resolution</dt><dd>${data.resolution[0]} x ${data.resolution[1]}</dd>
-    <dt>Avg Color</dt><dd><span class="color-swatch" style="background:rgb(${r},${g},${b})"></span> ${data.avg_rgb.map(v => v.toFixed(3)).join(", ")}</dd>
-  `;
-  if (data.source && data.source_url) {
-    const label = (SOURCES[data.source] && SOURCES[data.source].label) || data.source;
-    dl.innerHTML += `<dt>Source</dt><dd><a href="${data.source_url}" target="_blank" rel="noopener">${label} ↗</a></dd>`;
+  const hex = data.avg_srgb_hex || "#888888";
+  const refl = data.reflectance || null;
+  const alpha = data.roughness_radiance != null ? data.roughness_radiance : Math.pow(data.roughness, 2);
+  let rows = "";
+  if (refl) {
+    rows += `
+    <dt class="section">Reflectance (visible, photopic)</dt>
+    <dt>VLR total</dt><dd><strong>${pct(refl.total_vis)}</strong><span class="muted"> · diffuse ${pct(refl.diffuse_vis)} · specular ${pct(refl.specular_vis)}</span></dd>
+    <dt>Diffuse RGB</dt><dd><span class="color-swatch" style="background:${hex}"></span>${refl.diffuse_rgb.map(fmt3).join(", ")}<span class="muted"> · ${hex}</span></dd>
+    <dt>Specular RGB</dt><dd>${refl.specular_rgb.map(fmt3).join(", ")}</dd>
+    `;
   }
-  dl.style.display = "block";
+  rows += `
+    <dt class="section">Radiance primitive</dt>
+    <dt>Type</dt><dd>${data.primitive}<span class="muted"> · metalness ${fmt3(data.metalness)}</span></dd>
+    <dt>Roughness α</dt><dd>${fmt3(alpha)}<span class="muted"> (perceptual ${fmt3(data.roughness)})</span></dd>
+  `;
+  const used = (data.channels_used || []).slice();
+  const est = data.channels_estimated || [];
+  const mapsText = used.length
+    ? used.join(" · ") + (est.length ? `<span class="muted"> · estimated: ${est.join(", ")}</span>` : "")
+    : "—";
+  rows += `
+    <dt class="section">Texture</dt>
+    <dt>Resolution</dt><dd>${data.resolution[0]} × ${data.resolution[1]} px</dd>
+    <dt>Maps used</dt><dd>${mapsText}</dd>
+  `;
+  if (data.diffuse_scale && Math.abs(data.diffuse_scale - 1) > 1e-6) {
+    rows += `<dt>Albedo ×</dt><dd>${fmt3(data.diffuse_scale)}</dd>`;
+  }
+  dl.innerHTML = rows;
+  dl.style.display = "grid";
+  document.getElementById("summary-empty").style.display = "none";
 
-  // Download button
+  // Override Properties tab — sliders reflect the effective values of this render
+  const spec = data.specularity != null ? data.specularity : 0.05;
+  if (!opts.keepSliders) {
+    setSlider("tune-metal", data.metalness);
+    setSlider("tune-spec", spec);
+    setSlider("tune-rough", data.roughness);
+    setSlider("tune-diff", data.diffuse_scale != null ? data.diffuse_scale : 1.0);
+    specTouched = false;
+    currentJob.base = { roughness: data.roughness, metalness: data.metalness };
+  } else {
+    // Server re-seeds specularity when the primitive flips; follow it unless
+    // the user has taken over the slider.
+    if (!specTouched) setSlider("tune-spec", spec);
+    if (data.metalness != null) setSlider("tune-metal", data.metalness);
+  }
+  updateDerived(data);
+  const tune = document.getElementById("tune-panel");
+  tune.style.display = "block";
+  tune.classList.remove("busy");
+  document.getElementById("tune-empty").style.display = "none";
+  document.getElementById("tune-note").style.display = "block";
+
+  // Download (pinned at the bottom of the panel)
   const btn = document.getElementById("download-btn");
   btn.href = data.download_url;
   btn.style.display = "block";
   btn.textContent = "Download " + data.name + ".zip";
+}
+
+// ---------------------------------------------------------------------------
+// Override Properties — re-render the current job with overrides
+// ---------------------------------------------------------------------------
+
+// Specularity follows the primitive default (plastic 0.05 / metal 1.0) until
+// the user moves its slider; then it is an explicit override.
+let specTouched = false;
+
+function sliderDecimals(id) { return (id === "tune-diff" || id === "tune-metal" || id === "tune-bump") ? 2 : 3; }
+function sliderVal(id) { return parseFloat(document.getElementById(id).value); }
+
+function setSlider(id, value) {
+  const input = document.getElementById(id);
+  input.value = value;
+  document.getElementById(id + "-val").textContent = Number(value).toFixed(sliderDecimals(id));
+}
+
+// What each slider produces in the Radiance material. Server values (from the
+// last render) win; while dragging we show the local prediction.
+function updateDerived(data) {
+  const metal = sliderVal("tune-metal"), spec = sliderVal("tune-spec"), rough = sliderVal("tune-rough"), diff = sliderVal("tune-diff");
+  const primitive = metal >= 0.5 ? "metal" : "plastic";
+  document.getElementById("tune-metal-derived").textContent = `→ ${primitive} primitive`;
+  document.getElementById("tune-spec-derived").textContent = `→ ${pct(spec)} of light`;
+  const alpha = (data && data.roughness_radiance != null && Math.abs(data.roughness - rough) < 1e-6) ? data.roughness_radiance : rough * rough;
+  document.getElementById("tune-rough-derived").textContent = `→ Radiance α ${fmt3(alpha)}`;
+  let dvis = null;
+  if (data && data.reflectance && Math.abs((data.diffuse_scale || 1) - diff) < 1e-6 && Math.abs((data.specularity != null ? data.specularity : 0.05) - spec) < 1e-6) {
+    dvis = data.reflectance.diffuse_vis;
+  } else if (data && data.avg_rgb) {
+    const c = data.avg_rgb.map(v => Math.min(1, v * diff));
+    dvis = visible(c.map(v => v * (1 - spec)));
+  }
+  document.getElementById("tune-diff-derived").textContent = dvis != null ? `→ diffuse ${pct(dvis)} VLR` : "";
+  syncBumpEnabled();
+}
+
+// Bump is a conversion option (texdata scale): enabled only while the normal
+// map is in use and the material actually has one.
+function syncBumpEnabled() {
+  const hasNormal = !currentJob || (currentJob.data.channels_used || []).includes("normal");
+  const on = document.getElementById("opt-normal").checked && hasNormal;
+  const input = document.getElementById("tune-bump");
+  input.disabled = !on;
+  const why = !hasNormal ? "no normal map" : "normal map off";
+  document.getElementById("tune-bump-derived").textContent = on ? `→ texdata × ${sliderVal("tune-bump").toFixed(2)}` : `→ ${why}`;
+}
+
+["tune-metal", "tune-spec", "tune-rough", "tune-diff", "tune-bump"].forEach(id => {
+  const input = document.getElementById(id);
+  input.addEventListener("input", () => {
+    document.getElementById(id + "-val").textContent = Number(input.value).toFixed(sliderDecimals(id));
+    if (currentJob) updateDerived(currentJob.data);
+  });
+  input.addEventListener("change", () => {
+    if (id === "tune-spec") specTouched = true;
+    scheduleRerender();
+  });
+});
+
+document.getElementById("tune-reset").addEventListener("click", () => {
+  if (!currentJob) return;
+  // Back to the map-derived roughness/metalness, the primitive's default
+  // specularity, and no albedo scaling.
+  const base = currentJob.base || { roughness: currentJob.data.roughness, metalness: currentJob.data.metalness };
+  specTouched = false;
+  setSlider("tune-metal", base.metalness);
+  setSlider("tune-rough", base.roughness);
+  setSlider("tune-diff", 1.0);
+  setSlider("tune-bump", 1.0);
+  updateDerived(currentJob.data);
+  scheduleRerender();
+});
+
+let rerenderTimer = null;
+function scheduleRerender() {
+  clearTimeout(rerenderTimer);
+  rerenderTimer = setTimeout(rerender, 300);
+}
+
+async function rerender() {
+  if (!currentJob) return;
+  const tune = document.getElementById("tune-panel");
+  tune.classList.add("busy");
+  setStatus("Re-rendering with your overrides…");
+  const body = {
+    options: getOptions(),     // projection / maps / rotations as currently set
+    metalness: sliderVal("tune-metal"),
+    roughness: sliderVal("tune-rough"),
+    diffuse_scale: sliderVal("tune-diff"),
+  };
+  if (specTouched) body.specularity = sliderVal("tune-spec");
+  else body.reset_specularity = true;     // follow the primitive default
+  const post = () => fetch(`/api/v1/jobs/${currentJob.id}/rerender`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(CONVERT_TIMEOUT_MS),
+    body: JSON.stringify(body),
+  });
+  try {
+    let resp = await post();
+    if (resp.status === 503) {
+      // One conversion at a time on the server; a slider move that lands
+      // while the previous re-render is still running just waits its turn.
+      const retry = parseInt(resp.headers.get("Retry-After") || "5", 10);
+      setStatus(`Server busy — retrying in ${retry}s…`);
+      await new Promise(r => setTimeout(r, retry * 1000));
+      resp = await post();
+    }
+    if (!resp.ok) throw new Error(await apiError(resp));
+    const data = await resp.json();
+    showResult(data, undefined, { keepSliders: true, statusText: "Re-rendered with overrides." });
+  } catch (err) {
+    tune.classList.remove("busy");
+    setStatus("Re-render failed: " + errMessage(err), "error");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -610,9 +818,21 @@ themeBtn.addEventListener("click", () => {
   document.documentElement.dataset.theme = next;
   localStorage.setItem("theme", next);
   syncThemeButton();
-  // Re-pick catalog thumbnails + hero for the new theme (ambientCG has dark variants).
+  // Re-pick catalog thumbnails + hero + the Output reference tile for the new
+  // theme (ambientCG publishes light/dark variants).
   if (lastResults.length) renderCatalogGrid(lastResults);
   if (selectedItem) renderHero(selectedItem, selectedInfo);
+  if (currentRefItem && heroFor(currentRefItem)) {
+    document.getElementById("preview-ref-img").src = heroFor(currentRefItem);
+  }
 });
 
 syncThemeButton();
+
+// ---------------------------------------------------------------------------
+// About dialog (header)
+// ---------------------------------------------------------------------------
+const aboutDlg = document.getElementById("about-dialog");
+document.getElementById("about-btn").addEventListener("click", () => aboutDlg.showModal());
+document.getElementById("about-close").addEventListener("click", () => aboutDlg.close());
+aboutDlg.addEventListener("click", e => { if (e.target === aboutDlg) aboutDlg.close(); });  // backdrop click

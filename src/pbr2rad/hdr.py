@@ -209,16 +209,17 @@ def convert_ldr_to_hdr(
     srgb: bool = True,
     rle: bool = True,
     scale: float = 1.0,
+    clip: float | None = None,
 ) -> tuple[int, int]:
     """Convert an LDR image (PNG/JPG/TIFF) to Radiance HDR.
 
     ``srgb`` decodes sRGB-encoded input to linear light; set False for data
     maps (roughness, normal) if they are ever passed through this path.
     ``rle`` enables adaptive RLE compression (default True).
-    ``scale`` is a uniform multiplier applied after the gamma decode —
-    used by the converter to reserve headroom for a constant specular
-    term (see ``convert.convert_set``).
-    Returns ``(width, height)``.
+    ``scale`` is a uniform multiplier applied after the gamma decode (the
+    converter's diffuse multiplier); ``clip`` caps the result so a boosted
+    albedo can never claim more than 100 % reflectance (see
+    ``convert.convert_set``). Returns ``(width, height)``.
     """
     with Image.open(src) as raw:
         img = _demote_16bit(raw).convert("RGB")
@@ -229,6 +230,8 @@ def convert_ldr_to_hdr(
         pixels = _SRGB_LUT_NP[data] * scale
     else:
         pixels = data.astype(np.float64) * (scale / 255.0)
+    if clip is not None:
+        pixels = np.minimum(pixels, float(clip))
 
     write_hdr(dst, pixels.reshape(-1, 3), width, height, rle=rle)
     return width, height
@@ -244,6 +247,26 @@ def _demote_16bit(img: Image.Image) -> Image.Image:
         return img
     arr = np.clip(np.asarray(img, dtype=np.int64) // 256, 0, 255)
     return Image.fromarray(arr.astype(np.uint8), "L")
+
+
+# Radiance's photopic luminance weights (the ones `pvalue -b` / `rcalc`
+# use). Visible reflectance of a linear RGB reflectance triple.
+PHOTOPIC = (0.265, 0.670, 0.065)
+
+
+def visible(rgb) -> float:
+    """Photopic (visible) reflectance of a linear RGB triple, 0..1."""
+    r, g, b = (float(c) for c in rgb)
+    return PHOTOPIC[0] * r + PHOTOPIC[1] * g + PHOTOPIC[2] * b
+
+
+def srgb_hex(rgb) -> str:
+    """Linear RGB (0..1) → ``#rrggbb`` after sRGB encoding (for swatches)."""
+    def enc(c: float) -> int:
+        c = max(0.0, min(1.0, float(c)))
+        v = 12.92 * c if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+        return int(round(v * 255))
+    return "#{:02x}{:02x}{:02x}".format(*(enc(c) for c in rgb))
 
 
 def average_rgb(src: Path, *, srgb: bool = True) -> tuple[float, float, float]:

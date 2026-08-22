@@ -85,7 +85,8 @@ pbr2rad /materials/stone -o /rad_materials --projection spherical --u-scale 1 --
 --metalness FLOAT              Override metalness (0..1)
 --bump-scale FLOAT             Normal map strength (default: 1.0)
 --no-normal                    Skip normal map processing
---no-varying-roughness         Use mean roughness instead of per-pixel
+--varying-roughness            Opt-in: brightdata pattern from the roughness map
+                               (scales the diffuse reflectance, not roughness — legacy)
 -v, --verbose                  Show detailed output
 ```
 
@@ -179,7 +180,7 @@ wood_floor_rough plastic wood_floor
 |--------------------------------|-------------------------------------------|-------------------|
 | Albedo (diffuse, sRGB)         | `colorpict` on linear `.hdr` (RLE)        | done              |
 | Roughness (mean)               | `plastic`/`metal` roughness arg (a = r^2) | done              |
-| Roughness (spatially varying)  | `brightdata` specular modulation           | done              |
+| Roughness (spatially varying)  | `brightdata` (opt-in; modulates diffuse, not roughness) | legacy — true varying roughness needs `mixdata` (roadmap) |
 | Metalness                      | `plastic` vs `metal` primitive            | done              |
 | Normal map (GL/DX)             | `texdata` perturbation (3x `.dat`)        | done              |
 | Displacement                   | geometry modification (not material)      | out of scope      |

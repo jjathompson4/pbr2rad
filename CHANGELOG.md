@@ -4,6 +4,52 @@
 
 ### Added
 
+- **Reference-matched preview (lighting, exposure, framing, look).** The rig is
+  neutral (every light grey — the old one integrated to ≈ (0.81, 1.00, 1.37)
+  on any surface, a clear blue cast), soft (two broad `light` discs, 40°/50°)
+  in a dim surround of two `glow` hemispheres (sky/env — glow is what
+  reflections see and what the ambient pass uses, like gensky skies, so
+  chrome shows a dark body with soft reflections instead of black), and
+  **fixed-exposure**: brightness now encodes reflectance the way the source
+  renders do (`fixed_exposure()` = 1.05·π/E_vis from `rig_irradiance()`;
+  `PBR2RAD_PREVIEW_EXPOSURE=auto` restores the per-render percentile
+  exposure). Camera FOV 42° → 34° so the sphere fills the frame like the
+  references (and matches the reference tile in the Output card). A mild
+  display-only saturation (`PREVIEW_SATURATION = 1.25`) keeps our render
+  comparable to ambientCG's stylised spheres; neutrals are untouched and the
+  `.rad`/`.hdr`/readout are unaffected. `rig_neutrality ≤ 1.01` is
+  unit-tested; grey-card render R≈G≈B.
+
+  Calibration (sphere-mean display RGB, ours → ambientCG reference), after
+  the varying-roughness and 1−spec fixes below:
+  Concrete034 189/189/189 → 190/189/186 · Tiles141 218/208/199 → 215/211/206 ·
+  Bricks104 180/129/108 → 180/132/108 · Grass005 101/133/48 → 96/122/44 ·
+  WoodFloor052 165/128/95 → 201/149/94 (their wood is lit brighter) ·
+  Fabric030 98/97/98 → 117/116/117 · Metal049A 119/118/115 → 107/107/103;
+  top/bottom shading ratio 1.1–1.2 vs 1.1–1.3 in the references. Known
+  limitation: on near-mirror metals (Radiance α ≲ 0.03, e.g. chrome) the two
+  light discs reflect as dark spots — Radiance never shows `light` primitives
+  to mirror-traced rays (only `glow` is visible, and a glow that also
+  illuminates double-counts or blotches the ambient pass); rougher metals and
+  all plastics get proper highlights from the direct calculation.
+- **Reference side-by-side.** When a conversion came from the Browse panel,
+  the Output card shows the source's sphere render next to ours.
+- **Material readout (ClimateStudio-style).** The Output panel now lists the
+  emitted material's characteristics, computed with Radiance semantics
+  (`convert.material_reflectance`, photopic weights 0.265/0.670/0.065):
+  visible reflectance (VLR) total with its diffuse / specular split,
+  diffuse and specular RGB (+ sRGB swatch/hex), specularity, roughness as
+  Radiance α and perceptual, texture tile size in px and cm. The same
+  numbers land in `manifest.json` (`specularity`, `roughness_radiance`,
+  `diffuse_scale`, `reflectance`, `avg_srgb_hex`) for CLI users — CS's own
+  dialog cannot read them off a textured chain (it shows 100 %).
+- **Tune-material sliders.** Metalness, specularity, roughness and diffuse
+  (albedo ×) sliders under the preview re-render the *same job* with overrides
+  (`POST /api/v1/jobs/{job_id}/rerender`; job state persisted in
+  `job.json`, sources kept for the job's life, successive moves compose,
+  download zip reflects the tuned material). `ConvertOptions` /
+  `ConvertOptionsRequest` gain `specularity_override` and `diffuse_scale`
+  (CLI flags coming; the web sliders use them today).
 - **ambientCG as a second texture source.** `pbr2rad fetch --source
   ambientcg Bricks104` downloads the material's zip pack from
   ambientcg.com (v3 API, CC0), extracts only the maps the conversion
@@ -78,6 +124,29 @@
 
 ### Changed
 
+- **About dialog.** An "About" pill in the header opens a short dialog:
+  what pbr2rad does, why (photoreal Radiance materials without expert-mode
+  work), the intended ClimateStudio workflow, and its status (an experiment,
+  with approval from and accommodations by the ClimateStudio developers).
+- **Two-panel layout with a tabbed Output panel.** The left Settings panel
+  is gone; Reference Material and Output split the width 50/50. The Output panel
+  keeps a fixed height (never scrolls) with the two sphere renders on top,
+  three tabs — **Maps & Projection** (conversion settings, compact:
+  projection mode + planar axis, U/V scale/offset, flips, use-normal-map,
+  the legacy roughness-map brightness opt-in; changes apply to the next
+  conversion and re-render the current result), **Override Properties**
+  (the default tab: Metalness · Specular · Roughness · Albedo × · Bump ×
+  sliders, each with a plain-language ⓘ tooltip and the value it produces —
+  primitive, % of light, Radiance α, diffuse VLR, texdata scale; Bump is
+  greyed out when the normal map is off or absent; "Reset to maps"), and
+  **Summary** (what the converted material is: VLR split, diffuse/specular
+  RGB + swatch, Radiance type and α, texture resolution, maps used; the
+  name/source/physical size already live on the reference card) — and the
+  Download button pinned at the bottom. The roughness/metalness override
+  fields are gone — the sliders cover them.
+- **Preview framing.** Camera FOV 27.5° so our sphere fills ~95 % of its
+  tile like the source renders (~96 %); the reference tile re-picks its
+  light/dark variant when the theme toggles.
 - **Selection detail layout.** The hero row now holds the large preview,
   facts, resolution picker and Fetch & Convert side by side (≈260 px), the
   catalog grid keeps its rows at content height (`grid-auto-rows:
@@ -101,6 +170,23 @@
 
 ### Fixed
 
+- **"Varying roughness" darkened every textured material.** The `brightdata`
+  modifier built from the roughness map was meant to modulate specular, but
+  a Radiance pattern scales the material *colour* — the diffuse reflectance
+  of a plastic (all of a metal) — so materials lost up to
+  `rough_modulation × roughness` (Concrete034: 20 % darker on screen, ~40 %
+  less reflectance in a simulation). It is now **opt-in**
+  (`--varying-roughness` / "Roughness map → brightness (legacy)"), default
+  off for CLI and web; the roughness map still sets the scalar roughness.
+  True spatially varying roughness would need a `mixdata` of two plastics
+  (roadmap). Golden hashes regenerated for the default chain.
+- **Plastics were 5 % too dark.** The converter pre-scaled the albedo `.hdr`
+  by `(1 − specularity)` "to reserve headroom for the specular term", but
+  Radiance already applies exactly that factor to the diffuse term of
+  `plastic` and `metal` (`normal.c`: `rdiff = 1 − rspec`), so the factor was
+  applied twice. The `.hdr` now carries the albedo as-is (×`diffuse_scale`,
+  clipped at 1.0); energy conservation holds because Radiance's own
+  `C·(1−s) + s ≤ 1`. Golden hashes regenerated (`.hdr` + manifest).
 - **Non-square textures rendered with the albedo misaligned against the
   normal/roughness maps** (`cal.py`, `rad.py`, `convert.py`). Radiance maps a
   picture so its *short* side spans `[0,1]` and its long side `[0, long/short]`

@@ -34,6 +34,7 @@ from .models import (
     DiscoverResponse,
     HealthResponse,
     PolyHavenConvertRequest,
+    RerenderRequest,
     SourceConvertRequest,
 )
 from .preview import radiance_available, render_preview
@@ -99,6 +100,8 @@ def _opts_from_request(req: ConvertOptionsRequest) -> ConvertOptions:
         flip_h=req.flip_h,
         flip_v=req.flip_v,
         dat_resolution=req.dat_resolution,
+        specularity_override=req.specularity_override,
+        diffuse_scale=req.diffuse_scale,
     )
 
 
@@ -154,11 +157,21 @@ def _make_response(
     has_preview: bool = False,
     *,
     source: str | None = None,
+    preview_rev: int | None = None,
 ) -> ConvertResponse:
     source_url = None
     if source:
         # The material name is the canonical asset id for every source.
         source_url = get_source(source).asset_url(result.name)
+    preview_url = None
+    if has_preview:
+        preview_url = f"/api/v1/preview/{job_id}"
+        if preview_rev is not None:
+            preview_url += f"?r={preview_rev}"   # re-renders must bust the <img> cache
+    dims = None
+    src_meta = getattr(result, "source", None) or {}
+    if isinstance(src_meta, dict) and src_meta.get("dims_cm"):
+        dims = [float(v) for v in src_meta["dims_cm"]]
     return ConvertResponse(
         job_id=job_id,
         name=result.name,
@@ -168,11 +181,17 @@ def _make_response(
         avg_rgb=[round(c, 4) for c in result.avg_rgb],
         resolution=[result.width, result.height],
         download_url=f"/api/v1/download/{job_id}",
-        preview_url=f"/api/v1/preview/{job_id}" if has_preview else None,
+        preview_url=preview_url,
         channels_used=list(getattr(result, "channels_used", []) or []),
         channels_estimated=list(getattr(result, "channels_estimated", []) or []),
         source=source,
         source_url=source_url,
+        specularity=round(float(getattr(result, "specularity", 0.05)), 4),
+        roughness_radiance=round(float(getattr(result, "roughness_radiance", 0.0)), 4),
+        diffuse_scale=round(float(getattr(result, "diffuse_scale", 1.0)), 4),
+        reflectance=getattr(result, "reflectance", None) or None,
+        avg_srgb_hex=getattr(result, "avg_srgb_hex", None),
+        dimensions_cm=dims,
     )
 
 
@@ -343,7 +362,9 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
     return result, has_preview
 
 
-async def _run_conversion(job_id: str, work, *, source: str | None = None) -> ConvertResponse:
+async def _run_conversion(
+    job_id: str, work, *, source: str | None = None, preview_rev: int | None = None,
+) -> ConvertResponse:
     """Run blocking conversion work in the threadpool, one job at a time.
 
     The event loop stays free to serve health checks and browsing traffic
@@ -355,7 +376,7 @@ async def _run_conversion(job_id: str, work, *, source: str | None = None) -> Co
         result, has_preview = await run_in_threadpool(work)
     finally:
         _CONVERT_LOCK.release()
-    return _make_response(job_id, result, has_preview, source=source)
+    return _make_response(job_id, result, has_preview, source=source, preview_rev=preview_rev)
 
 
 @router.post("/convert/upload", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
@@ -394,6 +415,15 @@ async def convert_upload(
             raise HTTPException(
                 400, "No albedo/diffuse map found. Label at least one file as 'albedo'."
             )
+        # Remember how this job was built so the Output-panel sliders can
+        # re-render it with overrides.
+        tempdir.write_job_state(job_id, {
+            "kind": "upload",
+            "name": name or None,
+            "mat_dir": "upload",
+            "channels": [c.model_dump() for c in channel_list] if channel_list is not None else None,
+            "options": opts_req.model_dump(),
+        })
         return _convert_and_preview(pbr, output_dir, opts)
 
     return await _run_conversion(job_id, work)
@@ -442,9 +472,79 @@ async def _convert_from_source(
             raise HTTPException(
                 400, f"No albedo map found in {src.display_name} asset '{asset_id}'"
             )
+        tempdir.write_job_state(job_id, {
+            "kind": "source",
+            "source": source,
+            "asset_id": asset_id,
+            "name": None,
+            "mat_dir": os.path.relpath(mat_dir, upload_dir.parent),
+            "channels": None,
+            "options": options.model_dump(),
+        })
         return _convert_and_preview(pbr, output_dir, opts)
 
     return await _run_conversion(job_id, work, source=source)
+
+
+@router.post("/jobs/{job_id}/rerender", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
+async def rerender_job(job_id: str, req: RerenderRequest):
+    """Re-convert + re-render an existing job with material overrides.
+
+    Drives the Output-panel sliders: the job's source maps and options are
+    kept for its lifetime (30 min from the last touch), so a specularity /
+    roughness / diffuse change re-bakes the material and preview in a few
+    seconds without re-fetching anything.
+    """
+    job_dir = tempdir.get_job_dir(job_id)
+    state = tempdir.read_job_state(job_id)
+    if job_dir is None or state is None:
+        raise HTTPException(404, "Job expired — convert the material again to keep tuning it.")
+
+    try:
+        if req.options is not None:
+            opts_req = req.options.model_copy()
+        else:
+            opts_req = ConvertOptionsRequest(**(state.get("options") or {}))
+    except Exception as exc:
+        raise HTTPException(500, f"Stored job options are invalid: {exc}")
+    if req.reset_specularity:
+        opts_req.specularity_override = None
+    if req.specularity is not None:
+        opts_req.specularity_override = req.specularity
+    if req.roughness is not None:
+        opts_req.roughness_override = req.roughness
+    if req.metalness is not None:
+        opts_req.metalness_override = req.metalness
+    if req.diffuse_scale is not None:
+        opts_req.diffuse_scale = req.diffuse_scale
+    state["options"] = opts_req.model_dump()
+    opts = _opts_from_request(opts_req)
+
+    mat_dir = job_dir / str(state.get("mat_dir") or "upload")
+    output_dir = job_dir / "output"
+    source = state.get("source")
+    name = state.get("name")
+    channels = state.get("channels")
+
+    def work():
+        if not mat_dir.is_dir():
+            raise HTTPException(404, "Job expired — convert the material again to keep tuning it.")
+        if channels:
+            pbr = _build_pbrset_from_labels(
+                [ChannelMap(**c) for c in channels], mat_dir, name or "material",
+            )
+        else:
+            pbr = discover(mat_dir, name=name or None)
+        if pbr.albedo is None:
+            raise HTTPException(400, "No albedo map found for this job.")
+        tempdir.write_job_state(job_id, state)   # successive slider moves compose
+        out = _convert_and_preview(pbr, output_dir, opts)
+        tempdir.touch_job(job_id)
+        return out
+
+    return await _run_conversion(
+        job_id, work, source=source, preview_rev=int(time.time() * 1000),
+    )
 
 
 @router.post("/sources/{source}/convert", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])

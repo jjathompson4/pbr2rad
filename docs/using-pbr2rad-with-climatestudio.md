@@ -159,6 +159,19 @@ physically wrong 100% reflectance for every textured material. The
 materials still *simulate/render* with the correct textured
 reflectances — only the dialog's summary is wrong.
 
+### What pbr2rad.com shows instead (2026-08)
+
+The web Output panel now lists the numbers CS can't derive from a textured
+chain, computed with Radiance's own semantics (`convert.material_reflectance`,
+photopic weights 0.265/0.670/0.065): VLR total with the diffuse/specular
+split, diffuse/specular RGB, specularity, roughness as Radiance α and as the
+perceptual value, and the tile size. The same fields are in `manifest.json`
+(`reflectance`, `specularity`, `roughness_radiance`, `avg_srgb_hex`) for CLI
+libraries. Note the convention: for a pbr2rad `plastic` with pattern colour C
+and specularity s, diffuse = C·(1−s) and specular = s — i.e. exactly the
+"diff 95 % / spec 5 %" CS reports for RGB `1 1 1`, which is why the converter
+no longer pre-scales the `.hdr` by (1−s) (that had been applied twice).
+
 ### Candidate fix — NOT YET IMPLEMENTED
 
 If the re-test confirms the dialog problems, the plan is to have
@@ -198,7 +211,7 @@ metalness map. To override after generation, either:
 
 ### CS GPU Radiance may not support all modifiers
 
-The full chain emitted by pbr2rad (`colorpict` → `texdata` → `brightdata` →
+The full chain emitted by pbr2rad (`colorpict` → `texdata` → [`brightdata`, opt-in] →
 `plastic`) renders correctly on CPU Radiance and Accelerad. CS's GPU
 Radiance engine has historically supported a subset of Radiance primitives;
 varying-roughness via `brightdata` is the most likely thing to degrade or
