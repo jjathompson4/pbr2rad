@@ -124,6 +124,14 @@
 
 ### Changed
 
+- **Output panel vertical budget.** The status line now sits on the heading
+  row, and the preview pair is hidden until there is a result, so on landing
+  the Output tabs align with the Reference panel's source toggle. With a
+  result, the previews are sized by the panel's spare height (never upscaled
+  past their native 384 px, floor 150 px) and are the only element that
+  shrinks, so the Override / Maps / Summary tabs and the Download button fit
+  without scrolling on normal windows; the tab block keeps the height of its
+  tallest tab so switching tabs doesn't resize the previews.
 - **About dialog.** An "About" pill in the header opens a short dialog:
   what pbr2rad does, why (photoreal Radiance materials without expert-mode
   work), the intended ClimateStudio workflow, and its status (an experiment,

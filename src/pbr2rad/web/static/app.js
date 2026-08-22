@@ -598,13 +598,16 @@ function showResult(data, refItem, opts = {}) {
   // Preview (+ reference render when the material came from the Browse panel)
   const previewImg = document.getElementById("preview-img");
   const cap = document.getElementById("preview-cap");
+  const pair = document.getElementById("preview-pair");
   if (data.preview_url) {
     previewImg.src = data.preview_url;
     previewImg.classList.add("visible");
     cap.style.display = "block";
+    pair.classList.add("has-preview");
   } else {
     previewImg.classList.remove("visible");
     cap.style.display = "none";
+    pair.classList.remove("has-preview");
   }
   const refFig = document.getElementById("preview-ref-fig");
   const refImg = document.getElementById("preview-ref-img");
