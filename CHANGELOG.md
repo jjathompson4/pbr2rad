@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **Radiance preview intermediates shipped in the download zip**
+  (`web/api.py`). `_zip_directory` stripped `preview_*` files and `.oct` /
+  `.bmp` by extension, but `preview.hdr` — the raw 384x384 render — has
+  neither the underscore nor a skipped extension, so it landed in the zip
+  next to the material's real `<name>.hdr` albedo, where it reads as a
+  texture map. The prefix set now covers `preview.` as well, with an
+  explicit keep-list for `preview.png`, which is a deliverable (it is also
+  the source for the material's `.pvw` and is served by
+  `/api/v1/preview/{job_id}`, so it stays on disk in every case —
+  `_zip_directory` only decides what enters the stream).
+
+  Landed in the same commit as the `.pvw` work below, though it is an
+  unrelated fix; see that commit for both.
+
 - **`.dat` layout vs. declaration mismatch** (`normal.py`) — `write_dat_2d`
   declared dimensions as `(width, height)` but wrote the data row-major. Per
   Radiance's rule "the last declared dimension varies fastest in the file,"
