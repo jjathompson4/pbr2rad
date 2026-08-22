@@ -127,7 +127,11 @@
 - **About dialog.** An "About" pill in the header opens a short dialog:
   what pbr2rad does, why (photoreal Radiance materials without expert-mode
   work), the intended ClimateStudio workflow, and its status (an experiment,
-  with approval from and accommodations by the ClimateStudio developers).
+  with approval from and accommodations by the ClimateStudio developers),
+  plus a "Known limitations" list (perforated / cut-out materials — opacity
+  maps are not used yet, see `docs/opacity-cutout-plan.md`; displacement & AO
+  unused; near-mirror metal preview discs; ClimateStudio material browser
+  support from the latest v2.4x stable release candidate; 2k cap).
 - **Two-panel layout with a tabbed Output panel.** The left Settings panel
   is gone; Reference Material and Output split the width 50/50. The Output panel
   keeps a fixed height (never scrolls) with the two sphere renders on top,

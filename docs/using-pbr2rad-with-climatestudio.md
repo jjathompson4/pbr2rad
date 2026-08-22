@@ -5,6 +5,13 @@ applying them to Rhino/ClimateStudio models. Captures the workflow we
 validated against a real Rhino office scene (`scenes/cs-office-test.obj`),
 plus the gotchas we hit along the way.
 
+> **Status (2026-08-22):** pbr2rad materials will likely only appear correctly
+> in the ClimateStudio material browser from the **latest CS v2.4x stable
+> release candidate** onward; earlier builds may not display textured
+> materials properly in the material browser (see "What the custom-material
+> import dialog shows" below). The web app's About dialog says the same under
+> "Known limitations".
+
 ---
 
 ## How pbr2rad changes the Radiance texturing workflow

@@ -162,6 +162,15 @@ Files potentially touched:
    background thread in `web/app.py`), together with `persist_rootfs =
    "always"` in `fly.toml` so the disk copy actually survives auto-stop.
 
+8. **Opacity maps → cutouts (perforated metal, fences, nets).** ambientCG
+   `Opacity` maps are dropped at every stage today, so perforated plates
+   convert as solid plates with dark spots and wrong averages. Radiance can do
+   it: a `mixpict` with `void` as the background is a cutout (verified with
+   rtrace/rcontrib). Full diagnosis, verified test scene, chain design,
+   weighted-mean rule, UI/preview notes and the ClimateStudio risk are in
+   `docs/opacity-cutout-plan.md`. Listed under "Known limitations" in the web
+   About dialog until it lands.
+
 ## Verification
 
 ```bash

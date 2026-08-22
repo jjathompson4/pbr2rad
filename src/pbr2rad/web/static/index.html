@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=26">
+  <link rel="stylesheet" href="/static/style.css?v=27">
 </head>
 <body>
 
@@ -56,6 +56,15 @@
 
     <h3>Status</h3>
     <p>pbr2rad is an experiment by <a href="https://thompsonjeff.com" target="_blank" rel="noopener">Jeff Thompson</a>, not a Solemma product. It has been built with approval for use from the ClimateStudio developers, who have accommodated pbr2rad materials on their side. Textures are CC0 from ambientCG and Poly Haven. Questions or ideas: <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.</p>
+
+    <h3>Known limitations</h3>
+    <ul class="about-list">
+      <li><strong>Perforated / cut-out materials</strong> (perforated sheet metal, fences, nets, anything with an opacity map) convert as solid surfaces for now — the opacity map isn't used yet.</li>
+      <li>Displacement and ambient-occlusion maps are not used; only colour, roughness, metalness and normal maps drive the material.</li>
+      <li>Near-mirror metals can show the preview's two light sources as dark discs — a quirk of the preview render, not of the material.</li>
+      <li><strong>ClimateStudio support</strong> — pbr2rad materials will likely only appear correctly in ClimateStudio material browser from the latest v2.4x stable release candidate onward; earlier builds may not display textured materials properly in the material browser.</li>
+      <li>Textures are capped at 2k for conversion.</li>
+    </ul>
   </div>
 </dialog>
 
@@ -261,6 +270,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=26"></script>
+<script src="/static/app.js?v=27"></script>
 </body>
 </html>
