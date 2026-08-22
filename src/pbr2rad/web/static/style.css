@@ -846,3 +846,56 @@ footer {
   min-width: min(100%, 28rem);
 }
 .footer-sep { color: var(--faint); }
+
+/* ---------------------------------------------------------------------------
+   Phone widths: serviceable, not optimised. The ≤1100px rule above already
+   stacks the panels and lets the page scroll; this tidies the pieces that
+   assumed desktop room (header tagline, slider rows, tab labels, stacked
+   pane reservation, 4-up projection fields).
+   ------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  header { padding: 0.7rem 1rem; gap: 0.6rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.1rem; }
+  header > span:not(.badge-experimental) { display: none; }   /* tagline */
+  main { padding: 0.75rem; gap: 0.75rem; }
+  main > .panel, #output-panel { height: auto; overflow: visible; }
+  .panel { padding: 0.85rem 0.8rem; }
+  .panel-head { flex-wrap: wrap; }
+
+  /* Segmented controls: let long labels wrap instead of clipping */
+  .tab-btn, .out-tab-btn {
+    font-size: 0.74rem;
+    padding: 0.4rem 0.3rem;
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  /* Output tabs: the page scrolls, so don't reserve the tallest tab's height */
+  .out-panes { display: block; }
+  .out-pane { display: none; visibility: visible; pointer-events: auto; }
+  .out-pane.active { display: block; }
+  .preview-pair.has-preview { min-height: 0; }
+  .preview-fig img { max-height: 200px; }
+
+  /* Slider rows: label + derived value on one line, slider + number below */
+  .tune-row {
+    grid-template-columns: auto 1fr 3.2rem;
+    grid-template-areas: "label derived derived" "slider slider value";
+    row-gap: 0.15rem;
+    margin: 0.5rem 0;
+  }
+  .tune-row > span:first-child { grid-area: label; }
+  .tune-row > input { grid-area: slider; }
+  .tune-row > output { grid-area: value; }
+  .tune-row > .tune-derived { grid-area: derived; text-align: right; min-width: 0; }
+
+  /* Maps & Projection: two fields per row */
+  .opt-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .opt-grid-2-1 { grid-template-columns: 1fr 1fr; }
+  .opt-inline { gap: 0.4rem 1rem; }
+  .opt-hint { margin-left: 0; }
+
+  #tooltip { max-width: calc(100vw - 16px); }
+  .about-dialog { width: calc(100vw - 1.5rem); }
+  footer { padding: 0.8rem 0.75rem 1rem; }
+}

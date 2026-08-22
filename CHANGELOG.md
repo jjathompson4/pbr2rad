@@ -124,6 +124,12 @@
 
 ### Changed
 
+- **Phone widths are serviceable.** A ≤640 px rule set: header keeps
+  pbr2rad · Experimental · About · theme on one line (tagline hidden),
+  slider rows become two lines (label + derived hint, then slider + value)
+  instead of collapsing the track to 0 px, tab labels wrap instead of
+  clipping, the Output tabs stop reserving the tallest tab's height on the
+  scrolling page, projection fields go two-up, previews cap at 200 px.
 - **Output panel vertical budget.** The status line now sits on the heading
   row, and the preview pair is hidden until there is a result, so on landing
   the Output tabs align with the Reference panel's source toggle. With a
