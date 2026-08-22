@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
@@ -11,6 +12,8 @@ import pytest
 from PIL import Image
 
 from pbr2rad.web.app import create_app
+
+from test_pvw import parse_pvw as _pvw_fields
 
 try:
     from fastapi.testclient import TestClient
@@ -172,6 +175,92 @@ def test_download_after_convert(client, albedo_png):
     assert dl_resp.status_code == 200
     assert dl_resp.headers["content-type"] == "application/zip"
     assert len(dl_resp.content) > 100  # non-empty zip
+
+
+def test_download_zip_includes_pvw(client, albedo_png):
+    """The ClimateStudio preview file must survive into the delivered zip."""
+    resp = client.post(
+        "/api/v1/convert/upload",
+        files=[("files", (albedo_png.name, open(albedo_png, "rb"), "image/png"))],
+        data={
+            "channels": json.dumps([{"filename": albedo_png.name, "channel": "albedo"}]),
+            "name": "pvw_zip_test",
+        },
+    )
+    job_id = resp.json()["job_id"]
+
+    dl_resp = client.get(f"/api/v1/download/{job_id}")
+    assert dl_resp.status_code == 200
+
+    with zipfile.ZipFile(BytesIO(dl_resp.content)) as zf:
+        names = zf.namelist()
+    rads = [n for n in names if n.endswith(".rad")]
+    assert rads, names
+    for rad in rads:
+        assert rad[:-4] + ".pvw" in names, names
+
+
+def test_download_zip_excludes_preview_intermediates(tmp_path):
+    """Every artifact render_preview() leaves behind is stripped but the PNG."""
+    from pbr2rad.web.api import _zip_directory
+
+    out_dir = tmp_path / "job"
+    mat = out_dir / "mymat"
+    mat.mkdir(parents=True)
+
+    # The material itself.
+    for keep in ("mymat.rad", "mymat.pvw", "mymat.hdr", "mymat.cal"):
+        (mat / keep).write_bytes(b"keep")
+
+    # Everything render_preview() writes into the same directory.
+    for junk in (
+        "preview_scene.rad",
+        "preview.oct",
+        "preview.hdr",
+        "preview_filt.hdr",
+        "preview.bmp",
+    ):
+        (mat / junk).write_bytes(b"junk")
+    Image.new("RGB", (8, 8), (255, 0, 255)).save(mat / "preview.png")
+
+    with zipfile.ZipFile(_zip_directory(out_dir)) as zf:
+        names = [Path(n).name for n in zf.namelist()]
+
+    assert "preview.hdr" not in names, names
+    assert not [n for n in names if n.startswith("preview.") and n != "preview.png"], names
+    assert not [n for n in names if n.startswith("preview_")], names
+    # The material files -- including its real .hdr albedo -- survive.
+    assert {"mymat.rad", "mymat.pvw", "mymat.hdr", "mymat.cal"} <= set(names), names
+    # The finished thumbnail is a deliverable and stays.
+    assert "preview.png" in names, names
+
+
+def test_pvw_is_refreshed_from_the_render(tmp_path, albedo_png):
+    """With a renderer available, the .pvw carries the render, not the swatch."""
+    from pbr2rad.convert import ConvertOptions
+    from pbr2rad.discover import discover
+    from pbr2rad.web import api
+
+    src = tmp_path / "src" / "mat"
+    src.mkdir(parents=True)
+    Image.new("RGB", (16, 16), (180, 140, 100)).save(src / "mat_diff.png")
+
+    def fake_render(mat_dir, rad_file, output_png, **kwargs):
+        Image.new("RGB", (384, 384), (255, 0, 255)).save(output_png)
+        return True
+
+    out = tmp_path / "out"
+    with mock.patch.object(api, "radiance_available", return_value=True), \
+            mock.patch.object(api, "render_preview", side_effect=fake_render):
+        result, has_preview = api._convert_and_preview(
+            discover(src), out, ConvertOptions(),
+        )
+
+    assert has_preview
+    png = _pvw_fields(result.pvw_file.read_bytes())[3]
+    with Image.open(BytesIO(png)) as img:
+        assert img.size == (256, 256)
+        assert img.getpixel((128, 128)) == (255, 0, 255)  # the render, not the albedo
 
 
 def test_download_invalid_job(client):

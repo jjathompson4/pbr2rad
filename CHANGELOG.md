@@ -26,6 +26,13 @@
 
 ### Added
 
+- **ClimateStudio preview files.** Every material folder now ships a
+  `<name>.pvw` alongside `<name>.rad`, so ClimateStudio's material browser
+  can show a thumbnail for imported custom materials. The image is a render
+  of the material where a renderer is available (the web app), and a swatch
+  of the albedo otherwise (the CLI). `--no-pvw` opts out. Listed in
+  `manifest.json` under `files.pvw`.
+
 - **Per-map rotation overrides** (web UI). On the Poly Haven panel, each
   discovered channel (albedo, normal, roughness, metalness, AO,
   displacement) is shown as a thumbnail; clicking cycles it through

@@ -103,6 +103,11 @@ def _build_convert_parser(
         action="store_true",
         help="Don't estimate missing normal/roughness maps from albedo.",
     )
+    p.add_argument(
+        "--no-pvw",
+        action="store_true",
+        help="Don't write the ClimateStudio material-preview file.",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
         "-q", "--quiet", action="store_true",
@@ -160,6 +165,7 @@ def _run_convert(args: argparse.Namespace) -> int:
         bump_scale=args.bump_scale,
         varying_roughness=not args.no_varying_roughness,
         estimate_maps=not args.no_estimate,
+        write_pvw=not args.no_pvw,
     )
 
     sets = discover_many(args.input)

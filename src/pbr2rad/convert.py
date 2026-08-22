@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -12,8 +13,11 @@ from . import cal as cal_mod
 from . import estimate as estimate_mod
 from . import hdr as hdr_mod
 from . import normal as normal_mod
+from . import pvw as pvw_mod
 from . import rad as rad_mod
 from .discover import PBRSet
+
+log = logging.getLogger("pbr2rad.convert")
 
 
 @dataclass
@@ -47,6 +51,9 @@ class ConvertOptions:
     flip_h: bool = False
     flip_v: bool = False
 
+    # Ship a ClimateStudio preview file alongside the .rad (see pvw.py).
+    write_pvw: bool = True
+
 
 @dataclass
 class ConvertResult:
@@ -61,6 +68,8 @@ class ConvertResult:
     roughness: float
     metalness: float
     primitive: str
+    # ClimateStudio preview file, when one was written.
+    pvw_file: Path | None = None
     # Source-PBR channels that actually fed the Radiance material
     # ("albedo", "normal", "roughness", "metalness"). Anything in the input
     # set but not in this list was ignored (e.g. ao, displacement, or maps
@@ -309,6 +318,23 @@ def _convert_set_inner(
     )
     rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
 
+    # 6. ClimateStudio preview file. The albedo swatch is the always-available
+    #    source; callers with a renderer (the web app) overwrite the .pvw with
+    #    a rendered preview afterwards. A failure here must not lose the
+    #    material — the .rad is already complete and usable without it.
+    pvw_file: Path | None = None
+    if opts.write_pvw:
+        candidate = out_dir / f"{pbr.name}.pvw"
+        try:
+            pvw_mod.write_pvw(
+                candidate, pbr.name, pvw_mod.make_preview_png(pbr.albedo)
+            )
+            pvw_file = candidate
+        except Exception:
+            log.warning(
+                "preview (.pvw) generation failed for %s", pbr.name, exc_info=True,
+            )
+
     # De-duplicate channels_used while preserving insertion order.
     seen: set[str] = set()
     channels_used = [c for c in channels_used if not (c in seen or seen.add(c))]
@@ -329,6 +355,7 @@ def _convert_set_inner(
         roughness=roughness,
         metalness=metalness,
         primitive=mat.as_primitive(),
+        pvw_file=pvw_file,
         channels_used=channels_used,
         channels_estimated=channels_estimated,
     )
@@ -344,14 +371,18 @@ def write_manifest(results: list[ConvertResult], out_root: Path) -> Path:
         def _rel(p: Path) -> str:
             return Path(os.path.relpath(p, out_root)).as_posix()
 
+        files = {
+            "rad": _rel(r.rad_file),
+            "cal": _rel(r.cal_file),
+            "hdr": _rel(r.hdr_file),
+        }
+        if r.pvw_file is not None:
+            files["pvw"] = _rel(r.pvw_file)
+
         entries.append({
             "name": r.name,
             "primitive": r.primitive,
-            "files": {
-                "rad": _rel(r.rad_file),
-                "cal": _rel(r.cal_file),
-                "hdr": _rel(r.hdr_file),
-            },
+            "files": files,
             "resolution": [r.width, r.height],
             # Mean linear RGB of the SOURCE albedo (pre energy-conservation
             # scaling — the shipped .hdr is pre-multiplied by 1-spec for
