@@ -8,7 +8,7 @@ ambientCG) into Radiance material library folders usable by CPU
 Radiance, Accelerad, and ClimateStudio's GPU Radiance engine.
 
 All planned features from the original MVP and post-MVP roadmap have
-been implemented. 78 pytest cases pass and end-to-end renders with
+been implemented. 200+ pytest cases pass and end-to-end renders with
 Radiance 6.1a confirm correct output for multiple materials and
 projection modes.
 
@@ -30,10 +30,12 @@ src/pbr2rad/
 ├── normal.py     # Normal map -> .dat files + .cal perturbation,
 │                 #   roughness map -> .dat + brightdata modulation,
 │                 #   GL/DX convention detection
-├── fetch.py      # Poly Haven API client (download PBR sets)
-├── convert.py    # per-set orchestration + manifest.json
+├── fetch.py      # Poly Haven API client + shared download helpers
+├── ambientcg.py  # ambientCG API client (zip packs, selective extract)
+├── sources.py    # registry of texture sources (CLI --source, web)
+├── convert.py    # per-set orchestration + manifest.json (+ provenance)
 └── cli.py        # argparse entry point (`pbr2rad` / `pbr2rad fetch`)
-tests/            # 78 passing tests
+tests/            # 200+ passing tests
 scripts/          # verify_box.py (visual verification)
 pyproject.toml    # Python 3.10+, depends only on Pillow
 README.md
@@ -56,6 +58,7 @@ Design-doc scope coverage:
 | Manifest                   | done    |
 | RLE compression            | done    |
 | Poly Haven fetcher         | done    |
+| ambientCG fetcher          | done (v3 API, zip packs, `--source ambientcg`) |
 | 16-bit map support         | done    |
 | Displacement               | out of scope (geometry, not material) |
 
@@ -143,6 +146,20 @@ Files potentially touched:
    buttons (or grey them out with a note). Backend-side, add a guard
    in `fetch.download_texture_set` that rejects `resolution > 4k`
    unless an explicit override flag is set.
+
+6. **Physical size → projection scale.** ambientCG publishes real-world
+   dimensions (cm) for roughly a quarter of its materials and the fetcher
+   already records them in `pbr2rad_source.json` (`dims_cm`) and the
+   manifest. Offer a "use real-world size" option that sets
+   `u_scale = 100 / dims_cm[0]`, `v_scale = 100 / dims_cm[1]`
+   (`cal.py`: `u_scale = 1 / texture_width_meters`) so a 180 cm plank
+   texture tiles at 180 cm in a metre-unit model. Poly Haven's `/info`
+   also carries `dimensions` (mm) for textures — wire that into the
+   sidecar the same way.
+
+7. ~~Catalog prefetch on startup~~ — done (`PBR2RAD_PREFETCH_CATALOGS=1`,
+   background thread in `web/app.py`), together with `persist_rootfs =
+   "always"` in `fly.toml` so the disk copy actually survives auto-stop.
 
 ## Verification
 

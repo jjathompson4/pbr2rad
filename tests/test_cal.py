@@ -7,6 +7,32 @@ def test_uv_passthrough_uses_lu_lv() -> None:
     assert "v = Lv;" in text
 
 
+def test_every_mode_emits_picture_lookup() -> None:
+    """Square textures: pic_u/pic_v are identity multiples of u/v."""
+    for mode in ("uv", "planar", "box", "cylindrical", "spherical"):
+        text = cal.generate(mode)
+        assert "pic_u = u * 1;" in text, mode
+        assert "pic_v = v * 1;" in text, mode
+
+
+def test_picture_lookup_scales_by_aspect() -> None:
+    """Radiance spans a picture's long side over 0..aspect, so the lookup
+    for a 2:1 texture must stretch u by 2 (and v by 2 for 1:2)."""
+    text = cal.generate("planar", axis="xy", pic_u_scale=2.0, pic_v_scale=1.0)
+    assert "pic_u = u * 2;" in text
+    assert "pic_v = v * 1;" in text
+    text = cal.box(pic_u_scale=1.0, pic_v_scale=2.0)
+    assert "pic_u = u * 1;" in text
+    assert "pic_v = v * 2;" in text
+
+
+def test_picture_scales_from_dimensions() -> None:
+    assert cal.picture_scales(1024, 512) == (2.0, 1.0)
+    assert cal.picture_scales(512, 1024) == (1.0, 2.0)
+    assert cal.picture_scales(2048, 2048) == (1.0, 1.0)
+    assert cal.picture_scales(0, 10) == (1.0, 1.0)
+
+
 def test_planar_axis_xy_uses_px_py() -> None:
     text = cal.planar("xy", u_scale=2.0, v_scale=3.0)
     assert "Px * u_scale" in text

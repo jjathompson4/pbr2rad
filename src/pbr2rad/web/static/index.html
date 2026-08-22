@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
 
@@ -144,9 +144,15 @@
   <!-- Middle: Source -->
   <div class="panel">
     <h2>Reference Material</h2>
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="polyhaven">Poly Haven</button>
-      <button class="tab-btn" data-tab="upload">Upload Files</button>
+    <!-- One toggle bar: the two catalog sources share the Browse panel
+         (data-source picks which catalog), Upload Files has its own. -->
+    <div class="tabs" role="tablist" aria-label="Reference material source">
+      <button class="tab-btn active" data-tab="browse" data-source="ambientcg"
+              type="button" role="tab" aria-selected="true">ambientCG</button>
+      <button class="tab-btn" data-tab="browse" data-source="polyhaven"
+              type="button" role="tab" aria-selected="false">Poly Haven</button>
+      <button class="tab-btn" data-tab="upload"
+              type="button" role="tab" aria-selected="false">Upload Files</button>
     </div>
 
     <!-- Upload tab -->
@@ -164,15 +170,28 @@
       <button class="btn btn-primary" id="convert-btn" disabled>Convert</button>
     </div>
 
-    <!-- Poly Haven tab -->
-    <div id="tab-polyhaven" class="tab-content active">
-      <input type="text" class="ph-search" id="ph-search" placeholder="Search Poly Haven textures...">
+    <!-- Browse panel: one catalog grid, fed by whichever source is toggled -->
+    <div id="tab-browse" class="tab-content active">
+      <input type="text" class="ph-search" id="ph-search" placeholder="Search ambientCG materials...">
       <div class="ph-grid" id="ph-grid"></div>
-      <div id="ph-detail" style="display:none;margin-top:0.75rem">
-        <strong id="ph-detail-name"></strong>
-        <div class="res-picker" id="ph-res-picker"></div>
+      <div id="ph-detail" class="asset-detail" style="display:none">
+        <!-- Hero row: the selected material (large) with its facts and the
+             resolution picker beside it — keeps the block short so the
+             catalog grid above stays usable. The CTA closes the card. -->
+        <div class="asset-hero">
+          <img id="ph-detail-preview" class="asset-hero-img" alt="">
+          <div class="asset-hero-meta">
+            <strong id="ph-detail-name"></strong>
+            <div id="ph-detail-sub" class="asset-hero-sub"></div>
+            <div id="ph-detail-tags" class="asset-hero-tags"></div>
+            <a id="ph-detail-link" class="asset-hero-link" target="_blank" rel="noopener" style="display:none"></a>
+            <div class="asset-hero-actions">
+              <div class="res-picker" id="ph-res-picker"></div>
+            </div>
+          </div>
+        </div>
         <div id="ph-maps-grid" class="map-thumb-grid"></div>
-        <button class="btn btn-primary" id="ph-convert-btn" style="margin-top:0.5rem">Fetch &amp; Convert</button>
+        <button class="btn btn-primary asset-detail-cta" id="ph-convert-btn">Fetch &amp; Convert</button>
       </div>
     </div>
   </div>
@@ -188,16 +207,26 @@
 </main>
 
 <footer>
-  <p>Questions, bug reports, or ideas? Email
-    <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.
-    Find more experiments at
-    <a href="https://thompsonjeff.com" target="_blank" rel="noopener">thompsonjeff.com</a>.</p>
-  <p>Textures provided by
-    <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>
-    under CC0. If you find them useful, consider
-    <a href="https://www.patreon.com/polyhaven" target="_blank" rel="noopener">supporting them on Patreon</a>.</p>
+  <p class="footer-row footer-contact">
+    <span>Questions, bug reports, or ideas?
+      <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a></span>
+    <span class="footer-sep" aria-hidden="true">·</span>
+    <span>More experiments at
+      <a href="https://thompsonjeff.com" target="_blank" rel="noopener">thompsonjeff.com</a></span>
+  </p>
+  <p class="footer-row footer-credits">
+    <span>Textures by
+      <a href="https://ambientcg.com" target="_blank" rel="noopener">ambientCG</a>
+      and
+      <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>,
+      CC0</span>
+    <span class="footer-sep" aria-hidden="true">·</span>
+    <span>Support them:
+      <a href="https://www.patreon.com/ambientCG" target="_blank" rel="noopener">ambientCG on Patreon</a>,
+      <a href="https://www.patreon.com/polyhaven" target="_blank" rel="noopener">Poly Haven on Patreon</a></span>
+  </p>
 </footer>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

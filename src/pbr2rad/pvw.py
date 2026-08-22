@@ -65,15 +65,29 @@ def write_pvw(
 # Preview image normalisation
 # ---------------------------------------------------------------------------
 
-def make_preview_png(source: str | Path, size: int = PVW_IMAGE_SIZE) -> bytes:
+def make_preview_png(
+    source: str | Path,
+    size: int = PVW_IMAGE_SIZE,
+    *,
+    background: tuple[int, int, int] | None = None,
+) -> bytes:
     """Return ``source`` as a square RGB PNG of ``size``x``size`` pixels.
 
     Non-square inputs are centre-cropped to their largest square before the
-    resize, so the preview never shows a stretched texture.
+    resize, so the preview never shows a stretched texture. Sources with an
+    alpha channel (the web preview render has a transparent background) are
+    composited over ``background`` when given; otherwise alpha is dropped.
     """
     from PIL import Image
 
-    with Image.open(source) as img:
+    with Image.open(source) as raw:
+        img = raw
+        if background is not None and (
+            "A" in img.getbands() or img.mode == "P"
+        ):
+            img = img.convert("RGBA")
+            bg = Image.new("RGBA", img.size, (*background, 255))
+            img = Image.alpha_composite(bg, img)
         img = img.convert("RGB")
         w, h = img.size
         if w != h:

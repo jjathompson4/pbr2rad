@@ -12,6 +12,33 @@ def _make_png(path: Path, color: tuple[int, int, int], size: tuple[int, int] = (
     Image.new("RGB", size, color).save(path)
 
 
+def test_non_square_albedo_scales_picture_lookup(tmp_path: Path) -> None:
+    """A 2:1 albedo must stretch the colorpict lookup (pic_u = u * 2) while
+    the .dat modifiers keep the unit square — otherwise only the left half
+    of the picture is sampled and it no longer lines up with the normals."""
+    src = tmp_path / "in" / "Bricks104"
+    _make_png(src / "Bricks104_1K-JPG_Color.png", (150, 80, 60), size=(64, 32))
+    _make_png(src / "Bricks104_1K-JPG_NormalGL.png", (128, 128, 255), size=(64, 32))
+    _make_png(src / "Bricks104_1K-JPG_Roughness.png", (128, 128, 128), size=(64, 32))
+
+    result = convert_set(discover(src), tmp_path / "out", ConvertOptions(projection="box"))
+    cal_text = result.cal_file.read_text()
+    assert "pic_u = u * 2;" in cal_text
+    assert "pic_v = v * 1;" in cal_text
+    rad_text = result.rad_file.read_text()
+    assert "Bricks104.hdr Bricks104.cal pic_u pic_v" in rad_text
+    assert "Bricks104_normal.cal u v" in rad_text      # texdata keeps u v
+    assert (result.width, result.height) == (64, 32)
+
+    # Portrait: v stretches instead.
+    src2 = tmp_path / "in" / "tall"
+    _make_png(src2 / "tall_diff.png", (90, 90, 90), size=(16, 48))
+    result2 = convert_set(discover(src2), tmp_path / "out2", ConvertOptions(projection="uv"))
+    cal2 = result2.cal_file.read_text()
+    assert "pic_u = u * 1;" in cal2
+    assert "pic_v = v * 3;" in cal2
+
+
 def test_convert_set_end_to_end(tmp_path: Path) -> None:
     src = tmp_path / "in" / "wood_floor"
     _make_png(src / "wood_floor_diff_2k.png", (180, 140, 90))

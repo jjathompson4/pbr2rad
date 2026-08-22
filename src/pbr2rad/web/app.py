@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,10 +25,53 @@ CANONICAL_HOST = "pbr2rad.com"
 HEALTH_PATH = "/api/v1/health"
 
 
+# Opt-in catalog pre-warm (set PBR2RAD_PREFETCH_CATALOGS=1 in deployment):
+# the ambientCG catalog is ~5 paged API calls (~12 s cold), and it's the
+# landing-page source, so warm it while the machine boots rather than on the
+# first visitor's search. Off by default so tests/dev never touch the network
+# at startup.
+PREFETCH_ENV = "PBR2RAD_PREFETCH_CATALOGS"
+_PREFETCH_SOURCES = ("ambientcg", "polyhaven")
+
+
+def _prefetch_catalogs() -> None:
+    from .api import _load_catalog
+
+    for source in _PREFETCH_SOURCES:
+        try:
+            _load_catalog(source)
+        except Exception:
+            logging.getLogger("pbr2rad.web").warning(
+                "catalog prefetch failed for %s", source, exc_info=True,
+            )
+
+
+# The download cache (Poly Haven maps, ambientCG packs + thumbnails) lives
+# on the rootfs and is bounded by $PBR2RAD_CACHE_MAX_MB (fetch.py). Enforce
+# it at boot — the rootfs may have persisted across stop/start — and then
+# periodically; downloads also enforce it inline.
+CACHE_SWEEP_SECONDS = 10 * 60
+
+
+def _cache_budget_loop() -> None:
+    from ..fetch import enforce_cache_budget
+
+    log = logging.getLogger("pbr2rad.web")
+    while True:
+        try:
+            enforce_cache_budget()
+        except Exception:
+            log.warning("cache budget sweep failed", exc_info=True)
+        time.sleep(CACHE_SWEEP_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage temp directories and background cleanup."""
     cleanup_task = asyncio.create_task(tempdir.cleanup_loop())
+    if os.environ.get(PREFETCH_ENV) == "1":
+        threading.Thread(target=_prefetch_catalogs, name="catalog-prefetch", daemon=True).start()
+    threading.Thread(target=_cache_budget_loop, name="cache-budget", daemon=True).start()
     yield
     cleanup_task.cancel()
     tempdir.teardown()

@@ -44,9 +44,20 @@ class ChannelMap(BaseModel):
 
 
 class PolyHavenConvertRequest(BaseModel):
+    """Legacy body for ``POST /convert/polyhaven`` (kept for compatibility)."""
     slug: str
     # Policy: 1k default, 2k ceiling. Nothing above 2k is ever needed for
     # Radiance materials, and larger fetches would swamp the small host.
+    resolution: Literal["1k", "2k"] = "1k"
+    fmt: Literal["png", "jpg", "exr"] = "png"
+    options: ConvertOptionsRequest = Field(default_factory=ConvertOptionsRequest)
+
+
+class SourceConvertRequest(BaseModel):
+    """Body for ``POST /sources/{source}/convert`` — any registered source."""
+    asset_id: str = Field(min_length=1, max_length=128)
+    # Same 1k-default / 2k-ceiling policy as above. ``fmt`` is validated
+    # against the chosen source's formats in the route (ambientCG has no exr).
     resolution: Literal["1k", "2k"] = "1k"
     fmt: Literal["png", "jpg", "exr"] = "png"
     options: ConvertOptionsRequest = Field(default_factory=ConvertOptionsRequest)
@@ -84,6 +95,10 @@ class ConvertResponse(BaseModel):
     # Channels synthesized from the albedo ("normal", "roughness") because
     # the source set didn't include them.
     channels_estimated: list[str] = []
+    # Where the maps came from ("polyhaven" / "ambientcg") and the asset's
+    # public page, when the job fetched from a texture source (None for uploads).
+    source: str | None = None
+    source_url: str | None = None
 
 
 class HealthResponse(BaseModel):

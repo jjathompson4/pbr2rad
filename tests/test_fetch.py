@@ -202,9 +202,15 @@ class TestDownloadTextureSet:
 
         assert mat_dir == tmp_path / "wood_floor_03"
         assert mat_dir.is_dir()
-        downloaded = list(mat_dir.iterdir())
-        assert len(downloaded) == 1
-        assert downloaded[0].name == "diff_2k.png"
+        downloaded = sorted(p.name for p in mat_dir.iterdir())
+        # One map + the provenance sidecar (non-image; discover() ignores it).
+        assert downloaded == ["diff_2k.png", "pbr2rad_source.json"]
+        sidecar = json.loads((mat_dir / "pbr2rad_source.json").read_text())
+        assert sidecar["generator"] == "pbr2rad"
+        assert sidecar["source"] == "polyhaven"
+        assert sidecar["asset_id"] == "wood_floor_03"
+        assert sidecar["asset_url"] == "https://polyhaven.com/a/wood_floor_03"
+        assert sidecar["license"] == "CC0-1.0"
 
     def test_checksum_mismatch_raises(self, tmp_path):
         """Bad MD5 should raise FetchError."""
@@ -273,6 +279,41 @@ class TestFetchCLI:
         with pytest.raises(SystemExit):
             parser.parse_args(["rock_ground", "-o", "/tmp/out", "--resolution", "4k"])
 
+    def test_fetch_source_option(self):
+        """--source selects the texture source; default stays Poly Haven."""
+        import pytest
+
+        from pbr2rad.cli import _build_fetch_parser
+
+        parser = _build_fetch_parser()
+        args = parser.parse_args(["Bricks104", "-o", "/tmp/out"])
+        assert args.source == "polyhaven"
+        args = parser.parse_args(["Bricks104", "-o", "/tmp/out", "--source", "ambientcg"])
+        assert args.source == "ambientcg"
+        assert args.slug == "Bricks104"
+        with pytest.raises(SystemExit):
+            parser.parse_args(["x", "-o", "/tmp/out", "--source", "texturehaven"])
+
+    def test_main_dispatches_fetch_ambientcg(self, tmp_path, monkeypatch):
+        """--source ambientcg routes to the ambientCG downloader."""
+        from pbr2rad.cli import main
+
+        calls = []
+
+        def fake_download(asset_id, output_dir, *, resolution, fmt, verbose=False):
+            calls.append((asset_id, Path(output_dir), resolution, fmt))
+            d = Path(output_dir) / "Bricks104"
+            d.mkdir(parents=True)
+            return d
+
+        monkeypatch.setattr("pbr2rad.ambientcg.download_texture_set", fake_download)
+        rc = main([
+            "fetch", "bricks104", "-o", str(tmp_path),
+            "--source", "ambientcg", "--resolution", "2k", "--format", "jpg",
+        ])
+        assert rc == 0
+        assert calls == [("bricks104", tmp_path, "2k", "jpg")]
+
     def test_convert_subcommand_parses(self):
         """Verify convert subcommand still works via main()."""
         from pbr2rad.cli import _build_convert_parser
@@ -288,3 +329,76 @@ class TestFetchCLI:
         # Should fail gracefully (network error), but proves routing works
         rc = main(["fetch", "nonexistent_slug_xyz", "-o", "/tmp/out"])
         assert rc == 1  # FetchError → exit 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: cache budget / LRU eviction
+# ---------------------------------------------------------------------------
+
+class TestCacheBudget:
+    def _seed(self, root: Path, name: str, size: int, age: float) -> Path:
+        import os, time
+        p = root / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x" * size)
+        t = time.time() - age
+        os.utime(p, (t, t))
+        return p
+
+    def test_budget_from_env(self, monkeypatch):
+        from pbr2rad.fetch import DEFAULT_CACHE_MAX_MB, cache_budget_bytes
+        monkeypatch.delenv("PBR2RAD_CACHE_MAX_MB", raising=False)
+        assert cache_budget_bytes() == DEFAULT_CACHE_MAX_MB << 20
+        monkeypatch.setenv("PBR2RAD_CACHE_MAX_MB", "3")
+        assert cache_budget_bytes() == 3 << 20
+        monkeypatch.setenv("PBR2RAD_CACHE_MAX_MB", "0")
+        assert cache_budget_bytes() == 0
+        monkeypatch.setenv("PBR2RAD_CACHE_MAX_MB", "garbage")
+        assert cache_budget_bytes() == DEFAULT_CACHE_MAX_MB << 20
+
+    def test_evicts_oldest_first_and_keeps_catalogs(self, tmp_path, monkeypatch):
+        from pbr2rad import fetch
+        root = Path(tmp_path / "pbr2rad-cache")   # set by conftest
+        old = self._seed(root, "ambientcg/Old001/Old001_1K-JPG.zip", 400, age=3600)
+        mid = self._seed(root, "polyhaven/mid/1k/png/mid_diff_1k.png", 300, age=1800)
+        new = self._seed(root, "ambientcg/New002/thumbs_1K-JPG/albedo.jpg", 200, age=10)
+        cat = self._seed(root, "ambientcg/catalog.v3.json", 500, age=99999)
+        part = self._seed(root, "ambientcg/Busy/Busy_1K-JPG.zip.part", 100, age=5)
+
+        freed = fetch.enforce_cache_budget(budget=800)
+        # Need to drop from 1500 to ≤ 800: oldest evictable first (old 400,
+        # then mid 300) → 800 exactly; new, catalog and the fresh .part survive.
+        assert freed == 700
+        assert not old.exists() and not mid.exists()
+        assert new.exists() and cat.exists() and part.exists()
+        # Emptied asset dirs are tidied, per-source roots kept.
+        assert not old.parent.exists()
+        assert (root / "ambientcg").is_dir() and (root / "polyhaven").is_dir()
+        # Under budget now → no-op.
+        assert fetch.enforce_cache_budget(budget=800) == 0
+
+    def test_zero_budget_disables(self, tmp_path):
+        from pbr2rad import fetch
+        root = Path(tmp_path / "pbr2rad-cache")
+        f = self._seed(root, "ambientcg/X/X_1K-JPG.zip", 10_000, age=100)
+        assert fetch.enforce_cache_budget(budget=0) == 0
+        assert f.exists()
+
+    def test_download_file_enforces_budget(self, tmp_path, monkeypatch):
+        """A Poly Haven cache write triggers eviction of older files."""
+        from pbr2rad import fetch
+        root = Path(tmp_path / "pbr2rad-cache")
+        old = self._seed(root, "ambientcg/Old/Old_1K-JPG.zip", 900, age=3600)
+        monkeypatch.setenv("PBR2RAD_CACHE_MAX_MB", "0")   # bytes budget set directly below
+        monkeypatch.setattr(fetch, "cache_budget_bytes", lambda: 1000)
+        payload = b"y" * 500
+        resp = mock.MagicMock()
+        resp.read.return_value = payload
+        resp.__enter__ = mock.Mock(return_value=resp)
+        resp.__exit__ = mock.Mock(return_value=False)
+        dest = tmp_path / "out" / "new.png"
+        cache = root / "polyhaven/new/1k/png/new.png"
+        with mock.patch("pbr2rad.fetch.urllib.request.urlopen", return_value=resp):
+            fetch._download_file("https://x/new.png", dest, None, cache=cache)
+        assert dest.exists() and cache.exists()
+        assert not old.exists()          # 900 + 500 > 1000 → oldest evicted

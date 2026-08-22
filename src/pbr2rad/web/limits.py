@@ -3,9 +3,11 @@
 A dependency-free sliding-window limiter keyed by client IP, in two tiers:
 
 * ``rate_limit`` — heavy endpoints (uploads, conversions): 20/min.
-* ``rate_limit_light`` — cheap browse endpoints (search, info, download,
-  preview): 60/min, enough for fast typing + tile clicking without ever
-  bothering a human, while still capping a scripted loop.
+* ``rate_limit_light`` — browse endpoints (search, info, download, preview):
+  60/min, enough for fast typing + tile clicking without ever bothering a
+  human, while still capping a scripted loop. Note ``/info`` for an
+  ambientCG asset may download its 1K pack once to build map thumbnails;
+  that path has its own global throttle (``ambientcg._THUMB_DOWNLOADS``).
 
 Suitable for a single-instance deployment (the expected free-tier shape).
 If you ever run more than one instance behind a load balancer, swap this
