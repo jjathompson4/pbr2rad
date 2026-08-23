@@ -157,15 +157,33 @@ def spherical(
     v_offset: float = 0.0,
     pic_u_scale: float = 1.0,
     pic_v_scale: float = 1.0,
+    swap_uv: bool = False,
 ) -> str:
     """Spherical (equirectangular) projection.
 
     ``u`` maps longitude (angle around Z).
     ``v`` maps latitude (angle from equator, 0.5 = equator).
     Suitable for domes, globes, and spheres.
+
+    ``swap_uv`` transposes the wrap: ``u`` (the picture's x axis) runs
+    pole-to-pole and ``v`` runs around (for spheres whose UVs are laid out
+    that way; neither ambientCG's nor Poly Haven's reference spheres are).
+    ``u_scale`` / ``v_scale`` always scale ``u`` / ``v`` respectively.
     """
+    lon = "atan2(Py, Px) / (2*PI)"
+    lat = "asin(Pz / r) / PI"
+    if swap_uv:
+        u_line = f"u = mod({lat} * u_scale + 0.5 + u_offset, 1);\n"
+        v_line = f"v = mod({lon} * v_scale + v_offset, 1);\n"
+        mode = "spherical (equirectangular, transposed: u pole-to-pole, v around)"
+        note = "{ u: latitude (+0.5 so equator is at u=0.5); v: longitude around Z }\n"
+    else:
+        u_line = f"u = mod({lon} * u_scale + u_offset, 1);\n"
+        v_line = f"v = mod({lat} * v_scale + 0.5 + v_offset, 1);\n"
+        mode = "spherical (equirectangular)"
+        note = "{ u: longitude around Z; v: latitude (+0.5 so equator is at v=0.5) }\n"
     return (
-        _HEADER.format(mode="spherical (equirectangular)")
+        _HEADER.format(mode=mode)
         + f"u_scale : {u_scale:g};\n"
         + f"v_scale : {v_scale:g};\n"
         + f"u_offset : {u_offset:g};\n"
@@ -173,10 +191,9 @@ def spherical(
         + "{ guard r for the degenerate origin sample }\n"
         + "rr = sqrt(Px*Px + Py*Py + Pz*Pz);\n"
         + "r = if(rr - 1e-6, rr, 1e-6);\n"
-        + "{ longitude: angle around Z axis }\n"
-        + "u = mod(atan2(Py, Px) / (2*PI) * u_scale + u_offset, 1);\n"
-        + "{ latitude: angle from equator, +0.5 so equator is at v=0.5 }\n"
-        + "v = mod(asin(Pz / r) / PI * v_scale + 0.5 + v_offset, 1);\n"
+        + note
+        + u_line
+        + v_line
         + _picture_lookup(pic_u_scale, pic_v_scale)
     )
 
@@ -191,11 +208,13 @@ def generate(
     axis: PlanarAxis = "xy",
     pic_u_scale: float = 1.0,
     pic_v_scale: float = 1.0,
+    swap_uv: bool = False,
 ) -> str:
     """Dispatch helper used by the CLI.
 
     ``pic_u_scale``/``pic_v_scale`` are the albedo picture's aspect factors
     (``max(1, w/h)`` and ``max(1, h/w)``) — see ``_picture_lookup``.
+    ``swap_uv`` only applies to ``spherical`` (transposed wrap).
     """
     pic = dict(pic_u_scale=pic_u_scale, pic_v_scale=pic_v_scale)
     if mode == "uv":
@@ -222,7 +241,7 @@ def generate(
     if mode == "spherical":
         return spherical(
             u_scale=u_scale, v_scale=v_scale,
-            u_offset=u_offset, v_offset=v_offset, **pic,
+            u_offset=u_offset, v_offset=v_offset, swap_uv=swap_uv, **pic,
         )
     raise ValueError(f"unknown projection mode: {mode!r}")
 

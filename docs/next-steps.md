@@ -130,15 +130,15 @@ Files potentially touched:
    plastic → metal transition live). Add a fourth slider to the Tune
    panel once the primitive override (1) exists.
 
-4. **Preview geometry picker (plane / sphere / box).** Current preview
-   always renders on a tilted flat plane — good for reading the texture
-   honestly and matches Poly Haven, but loses the 3D "shader ball"
-   context that's useful for judging specular response and curvature
-   behavior. Bring back the sphere as a selectable option, add a cube
-   as a third option for seeing box/triplanar projections across
-   multiple faces at once. UI: radio buttons or tabs above the output
-   preview. Preview-only geometry swap (regenerates `preview_scene.rad`
-   and re-renders without re-downloading source maps).
+4. **Preview sphere matches the source render — done (2026-08-22).** The
+   web preview renders a preview-only chain (`preview_<name>.rad`, spherical
+   u×3 v×1.5, same for both sources; `ConvertOptions.write_preview_variant`) from a straight-on camera,
+   so the Output panel's two spheres compare like with like; a note under the
+   previews points to Maps & Projection for the export projection (box by
+   default). Background, measurements and the still-open real-world-units
+   question: `docs/preview-scale-notes.md`; calibration loop:
+   `scripts/preview_calibration.py`. Remaining idea: a cube geometry to see
+   box/triplanar across faces at once.
 
 5. **Resolution cap: default 1k, max 4k.** 8k / 16k sources cost
    >100 MB per material and don't meaningfully improve Radiance
@@ -148,15 +148,16 @@ Files potentially touched:
    in `fetch.download_texture_set` that rejects `resolution > 4k`
    unless an explicit override flag is set.
 
-6. **Physical size → projection scale.** ambientCG publishes real-world
-   dimensions (cm) for roughly a quarter of its materials and the fetcher
-   already records them in `pbr2rad_source.json` (`dims_cm`) and the
-   manifest. Offer a "use real-world size" option that sets
-   `u_scale = 100 / dims_cm[0]`, `v_scale = 100 / dims_cm[1]`
-   (`cal.py`: `u_scale = 1 / texture_width_meters`) so a 180 cm plank
-   texture tiles at 180 cm in a metre-unit model. Poly Haven's `/info`
-   also carries `dimensions` (mm) for textures — wire that into the
-   sidecar the same way.
+6. **Physical size → projection scale.** ambientCG publishes `dims_cm` for 510
+   of 2009 assets (already shown on the hero card) and **Poly Haven publishes
+   `dimensions` (mm) for all 851 textures** (API field; our normaliser in
+   `fetch.py` doesn't parse it yet). Radiance has no units, so `u_scale` =
+   repeats per *model* unit: add a Model-units selector (m · cm · mm · ft · in)
+   + Texture size (prefilled from the source, editable) → `u_scale = v_scale =
+   1 / size_in_model_units`, a Summary line "1 repeat = 2.00 m", CLI
+   `--units`/`--tile-size`, physical size in the sidecar/manifest. Pairs with
+   item 4 ("a ball as big as one tile"). Details and the measured facts are in
+   `docs/preview-scale-notes.md`.
 
 7. ~~Catalog prefetch on startup~~ — done (`PBR2RAD_PREFETCH_CATALOGS=1`,
    background thread in `web/app.py`), together with `persist_rootfs =

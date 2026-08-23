@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=31">
+  <link rel="stylesheet" href="/static/style.css?v=35">
 </head>
 <body>
 
@@ -61,8 +61,9 @@
     <ul class="about-list">
       <li><strong>Perforated / cut-out materials</strong> (perforated sheet metal, fences, nets, anything with an opacity map) convert as solid surfaces for now — the opacity map isn't used yet.</li>
       <li>Displacement and ambient-occlusion maps are not used; only colour, roughness, metalness and normal maps drive the material.</li>
-      <li>Near-mirror metals can show the preview's two light sources as dark discs — a quirk of the preview render, not of the material.</li>
+      <li>The preview sphere is lit by one small studio HDRI; the source sites use their own studios, so reflections in mirror-like metals won't match theirs exactly.</li>
       <li><strong>ClimateStudio support</strong> — pbr2rad materials will likely only appear correctly in ClimateStudio material browser from the latest v2.4x stable release candidate onward; earlier builds may not display textured materials properly in the material browser.</li>
+      <li>Some ambientCG wood reference renders are warmer and brighter than their own colour maps (Poly Haven's track theirs); our sphere shows the map as it is — which is what ClimateStudio will render.</li>
       <li>Textures are capped at 2k for conversion.</li>
     </ul>
   </div>
@@ -139,7 +140,7 @@
       </figure>
       <figure class="preview-fig" id="preview-out-fig">
         <img class="preview-img" id="preview-img" alt="Preview render">
-        <figcaption id="preview-cap" style="display:none" title="Radiance render of the converted material — fixed exposure, mild saturation for comparability with reference renders">pbr2rad · Radiance</figcaption>
+        <figcaption id="preview-cap" style="display:none">pbr2rad · Radiance <span class="tip" data-tip="The downloaded material&#x27;s projection can be set in Maps &amp; Projection; it defaults to Box/Triplanar, which is what ClimateStudio needs for most use-cases." tabindex="0" role="img" aria-label="The downloaded material&#x27;s projection can be set in Maps &amp; Projection; it defaults to Box/Triplanar, which is what ClimateStudio needs for most use-cases."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></figcaption>
       </figure>
     </div>
 
@@ -232,7 +233,7 @@
           </label>
           <label class="tune-row">
             <span>Bump × <span class="tip" data-tip="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map." tabindex="0" role="img" aria-label="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
-            <input type="range" id="tune-bump" min="0" max="3" step="0.05" value="1">
+            <input type="range" id="tune-bump" min="0" max="5" step="0.05" value="1">
             <output id="tune-bump-val">1.00</output>
             <span class="tune-derived" id="tune-bump-derived"></span>
           </label>
@@ -264,7 +265,8 @@
       <a href="https://ambientcg.com" target="_blank" rel="noopener">ambientCG</a>
       and
       <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>,
-      CC0</span>
+      CC0 · preview studio HDRI by
+      <a href="https://polyhaven.com/a/studio_small_09" target="_blank" rel="noopener">Poly Haven</a></span>
     <span class="footer-sep" aria-hidden="true">·</span>
     <span>Support them:
       <a href="https://www.patreon.com/ambientCG" target="_blank" rel="noopener">ambientCG on Patreon</a>,
@@ -272,6 +274,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=31"></script>
+<script src="/static/app.js?v=35"></script>
 </body>
 </html>

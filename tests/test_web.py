@@ -212,13 +212,18 @@ def test_download_zip_excludes_preview_intermediates(tmp_path):
     for keep in ("mymat.rad", "mymat.pvw", "mymat.hdr", "mymat.cal"):
         (mat / keep).write_bytes(b"keep")
 
-    # Everything render_preview() writes into the same directory.
+    # Everything render_preview() writes into the same directory, plus the
+    # reference-wrap preview chain convert_set writes for the web.
     for junk in (
-        "preview_scene.rad",
+        "preview.scene.rad",
+        "preview.rig.cal",
         "preview.oct",
         "preview.hdr",
         "preview_filt.hdr",
         "preview.bmp",
+        "preview_mymat.rad",
+        "preview_mymat.cal",
+        "preview_mymat_normal.cal",
     ):
         (mat / junk).write_bytes(b"junk")
     Image.new("RGB", (8, 8), (255, 0, 255)).save(mat / "preview.png")
@@ -261,6 +266,30 @@ def test_pvw_is_refreshed_from_the_render(tmp_path, albedo_png):
     with Image.open(BytesIO(png)) as img:
         assert img.size == (256, 256)
         assert img.getpixel((128, 128)) == (255, 0, 255)  # the render, not the albedo
+
+
+def test_convert_and_preview_renders_the_reference_wrap_variant(tmp_path):
+    """With write_preview_variant the sphere renders preview_<name>.rad (the
+    reference wrap); without it, the exported chain as before."""
+    from pbr2rad.convert import ConvertOptions
+    from pbr2rad.discover import discover
+    from pbr2rad.web import api
+
+    src = tmp_path / "src" / "mat"
+    src.mkdir(parents=True)
+    Image.new("RGB", (16, 16), (180, 140, 100)).save(src / "mat_diff.png")
+    seen = []
+
+    def fake_render(mat_dir, rad_file, output_png, **kwargs):
+        seen.append(Path(rad_file).name)
+        Image.new("RGB", (384, 384), (1, 2, 3)).save(output_png)
+        return True
+
+    with mock.patch.object(api, "radiance_available", return_value=True), \
+            mock.patch.object(api, "render_preview", side_effect=fake_render):
+        api._convert_and_preview(discover(src), tmp_path / "a", ConvertOptions(write_preview_variant=True))
+        api._convert_and_preview(discover(src), tmp_path / "b", ConvertOptions())
+    assert seen == ["preview_mat.rad", "mat.rad"]
 
 
 def test_download_invalid_job(client):
