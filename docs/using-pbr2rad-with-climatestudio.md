@@ -12,6 +12,11 @@ plus the gotchas we hit along the way.
 > import dialog shows" below). The web app's About dialog says the same under
 > "Known limitations".
 
+> **Thumbnail (`.pvw`) note:** pbr2rad.com's `.pvw` carries the web preview
+> render — the texture wrapped on a sphere the way the texture sites render
+> their reference spheres (illustrative), not the exported box/planar
+> projection. The CLI's `.pvw` is the albedo swatch.
+
 ---
 
 ## How pbr2rad changes the Radiance texturing workflow

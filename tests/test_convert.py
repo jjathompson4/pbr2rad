@@ -198,3 +198,52 @@ def test_varying_roughness_is_opt_in(tmp_path: Path) -> None:
     assert "brightdata" not in rad and "texdata" in rad
     assert "roughness" in result.channels_used           # still used for the scalar
     assert abs(result.roughness - 200 / 255) < 0.01
+
+
+def test_preview_variant_written_only_when_flagged(tmp_path: Path) -> None:
+    """write_preview_variant adds preview_<name>.{rad,cal,_normal.cal,_rough.cal}
+    (reference wrap, same .hdr/.dat) and leaves the exported files byte-identical."""
+    src = tmp_path / "in" / "Tiles141"
+    _make_png(src / "Tiles141_1K-JPG_Color.png", (200, 190, 180), size=(32, 16))
+    _make_png(src / "Tiles141_1K-JPG_NormalGL.png", (128, 128, 255), size=(32, 16))
+    _make_png(src / "Tiles141_1K-JPG_Roughness.png", (128, 128, 128), size=(32, 16))
+
+    plain = convert_set(discover(src), tmp_path / "plain",
+                        ConvertOptions(projection="box", varying_roughness=True))
+    flagged = convert_set(discover(src), tmp_path / "flagged",
+                          ConvertOptions(projection="box", varying_roughness=True,
+                                         write_preview_variant=True))
+
+    assert plain.preview_rad_file is None
+    assert not [p for p in plain.out_dir.iterdir() if p.name.startswith("preview_")]
+
+    out = flagged.out_dir
+    assert flagged.preview_rad_file == out / "preview_Tiles141.rad"
+    for name in ("preview_Tiles141.rad", "preview_Tiles141.cal",
+                 "preview_Tiles141_normal.cal", "preview_Tiles141_rough.cal"):
+        assert (out / name).is_file(), name
+    # Exported chain is unaffected (bytes) by the flag.
+    for name in ("Tiles141.rad", "Tiles141.cal", "Tiles141_normal.cal", "Tiles141_rough.cal"):
+        assert (out / name).read_bytes() == (plain.out_dir / name).read_bytes(), name
+
+    variant = flagged.preview_rad_file.read_text()
+    assert "Tiles141.hdr preview_Tiles141.cal pic_u pic_v" in variant      # shared .hdr, own .cal
+    assert "Tiles141_nor_r.dat" in variant and "preview_Tiles141_normal.cal u v" in variant
+    assert "preview_Tiles141_rough.cal u v" in variant
+    assert "preview_Tiles141_rough plastic preview_Tiles141" in variant   # own primitive name
+    cal_text = (out / "preview_Tiles141.cal").read_text()
+    assert "spherical" in cal_text and "u_scale : 3" in cal_text and "v_scale : 1.5" in cal_text
+    assert "transposed" not in cal_text                                   # default = ambientCG convention
+    assert "pic_u = u * 2;" in cal_text                                   # 2:1 picture still aspect-scaled
+
+    # Poly Haven renders its spheres the same way (survey 2026-08-23: texture
+    # orientation preserved on 118/121 directional assets, none rotated) → identical wrap.
+    ph = convert_set(discover(src), tmp_path / "ph",
+                     ConvertOptions(projection="box", write_preview_variant=True,
+                                    preview_wrap_source="polyhaven"))
+    ph_cal = (ph.out_dir / "preview_Tiles141.cal").read_text()
+    assert ph_cal == cal_text
+    assert (ph.out_dir / "Tiles141.cal").read_bytes() == (out / "Tiles141.cal").read_bytes()
+    # The variant never reaches the manifest.
+    write_manifest([flagged], tmp_path / "flagged")
+    assert "preview_" not in (tmp_path / "flagged" / "manifest.json").read_text()

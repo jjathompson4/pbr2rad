@@ -316,3 +316,40 @@ __all__ = [
     "average_rgb",
     "average_gray",
 ]
+
+
+def read_hdr(path) -> np.ndarray:
+    """Read a Radiance RGBE picture into an (H, W, 3) float64 array of linear
+    radiance (row 0 = top). Handles flat and new-style RLE scanlines, which
+    covers everything Radiance's own tools and this module write.
+    """
+    data = Path(path).read_bytes()
+    sep = data.index(b"\n\n")
+    pos = sep + 2
+    eol = data.index(b"\n", pos)
+    res = data[pos:eol].decode("ascii").split()
+    if len(res) != 4 or res[0] != "-Y" or res[2] != "+X":
+        raise ValueError(f"unsupported HDR orientation {res!r} in {path}")
+    height, width = int(res[1]), int(res[3])
+    pos = eol + 1
+    buf = np.frombuffer(data, dtype=np.uint8)
+    out = np.zeros((height, width, 4), dtype=np.uint8)
+    for y in range(height):
+        if (width >= 8 and width < 32768 and buf[pos] == 2 and buf[pos + 1] == 2
+                and ((int(buf[pos + 2]) << 8) | int(buf[pos + 3])) == width):
+            pos += 4                                    # new-style RLE scanline
+            for c in range(4):
+                x = 0
+                while x < width:
+                    n = int(buf[pos]); pos += 1
+                    if n > 128:
+                        n -= 128
+                        out[y, x:x + n, c] = buf[pos]; pos += 1
+                    else:
+                        out[y, x:x + n, c] = buf[pos:pos + n]; pos += n
+                    x += n
+        else:                                           # flat: width × RGBE
+            out[y] = buf[pos:pos + 4 * width].reshape(width, 4); pos += 4 * width
+    e = out[..., 3].astype(np.int32)
+    scale = np.where(e > 0, np.ldexp(1.0, e - 136), 0.0)
+    return out[..., :3].astype(np.float64) * scale[..., None]

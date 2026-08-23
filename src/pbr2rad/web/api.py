@@ -37,7 +37,7 @@ from .models import (
     RerenderRequest,
     SourceConvertRequest,
 )
-from .preview import radiance_available, render_preview
+from .preview import radiance_available, render_preview, rig_for
 
 log = logging.getLogger("pbr2rad.web")
 
@@ -80,9 +80,21 @@ _ALLOWED_EXTS = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _opts_from_request(req: ConvertOptionsRequest) -> ConvertOptions:
-    """Convert a Pydantic model to a library ConvertOptions."""
+def _opts_from_request(
+    req: ConvertOptionsRequest, *, source: str | None = None,
+) -> ConvertOptions:
+    """Convert a Pydantic model to a library ConvertOptions.
+
+    The web app always asks convert_set for the extra reference-wrap chain
+    (``preview_<name>.rad``): the Output-panel sphere renders the texture the
+    way the source site renders its reference spheres (``source`` picks the
+    site's convention; uploads get the default), so the side-by-side compares
+    like with like. The exported material is the user's projection
+    (box/triplanar by default) and is unaffected.
+    """
     return ConvertOptions(
+        write_preview_variant=True,
+        preview_wrap_source=source,
         projection=req.projection,
         planar_axis=req.planar_axis,
         u_scale=req.u_scale,
@@ -342,8 +354,15 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
     has_preview = False
     if radiance_available():
         preview_png = output_dir / result.name / "preview.png"
+        # The reference-wrap chain convert_set wrote for us (see
+        # _opts_from_request); falls back to the exported chain if absent.
+        rad_for_preview = getattr(result, "preview_rad_file", None) or result.rad_file
+        src_meta = getattr(result, "source", None) or {}
         has_preview = render_preview(
-            result.out_dir, result.rad_file, preview_png,
+            result.out_dir, rad_for_preview, preview_png,
+            rig=rig_for(result.primitive),    # metals: studio HDRI; others: light rig
+            source=src_meta.get("source") if isinstance(src_meta, dict) else None,   # per-source reference exposure
+            roughness=result.roughness,       # glossy: sampled specular; rough: folded
         )
         # convert_set already wrote a .pvw from the albedo swatch; a real
         # render of the material is a better thumbnail, so replace it. The
@@ -453,7 +472,7 @@ async def _convert_from_source(
         )
     download = get_downloader(source)
     job_id, upload_dir, output_dir = tempdir.new_job()
-    opts = _opts_from_request(options)
+    opts = _opts_from_request(options, source=source)
 
     def work():
         try:
@@ -518,11 +537,11 @@ async def rerender_job(job_id: str, req: RerenderRequest):
     if req.diffuse_scale is not None:
         opts_req.diffuse_scale = req.diffuse_scale
     state["options"] = opts_req.model_dump()
-    opts = _opts_from_request(opts_req)
+    source = state.get("source")
+    opts = _opts_from_request(opts_req, source=source)
 
     mat_dir = job_dir / str(state.get("mat_dir") or "upload")
     output_dir = job_dir / "output"
-    source = state.get("source")
     name = state.get("name")
     channels = state.get("channels")
 

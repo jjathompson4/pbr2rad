@@ -171,3 +171,28 @@ def test_convert_ldr_to_hdr_clip(tmp_path):
     dst2 = tmp_path / "white2.hdr"
     convert_ldr_to_hdr(src, dst2, srgb=True, scale=1.5, clip=None)
     assert dst.read_bytes() != dst2.read_bytes()
+
+
+def test_read_hdr_round_trips_write_hdr(tmp_path):
+    """read_hdr decodes what write_hdr produces (RLE and flat), to RGBE precision."""
+    import numpy as np
+    from pbr2rad import hdr
+    rng = np.random.default_rng(3)
+    w, h = 24, 9
+    px = rng.uniform(0.001, 50.0, size=(h * w, 3))
+    px[0] = (0.0, 0.0, 0.0)
+    for rle in (True, False):
+        path = tmp_path / f"rt_{int(rle)}.hdr"
+        hdr.write_hdr(path, px, w, h, rle=rle)
+        back = hdr.read_hdr(path)
+        assert back.shape == (h, w, 3)
+        flat = back.reshape(-1, 3)
+        assert np.allclose(flat[0], 0.0)
+        # RGBE shares one exponent per pixel: precision is ~1/256 of the pixel's
+        # brightest channel, so tiny channels next to big ones quantize away.
+        err = np.abs(flat[1:] - px[1:])
+        assert (err <= px[1:].max(axis=1, keepdims=True) / 128.0 + 1e-9).all()
+        bright = px[1:].max(axis=1) > 1.0
+        rel = err[bright] / np.maximum(px[1:][bright], 1e-9)
+        assert np.median(rel) < 0.01
+

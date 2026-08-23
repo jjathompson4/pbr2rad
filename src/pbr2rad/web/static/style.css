@@ -215,31 +215,6 @@ main > .panel {
   padding: 1rem 1.1rem;
 }
 
-/* Settings mode toggle — two pill buttons */
-.settings-mode {
-  display: flex;
-  gap: 0;
-  margin-bottom: 0.85rem;
-}
-.mode-btn {
-  flex: 1;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border);
-  background: var(--control-bg);
-  color: var(--heading);
-  cursor: pointer;
-  font-size: 0.82rem;
-  font-weight: 500;
-}
-.mode-btn:first-child { border-radius: 4px 0 0 4px; }
-.mode-btn:last-child  { border-radius: 0 4px 4px 0; border-left: none; }
-.mode-btn:hover { background: var(--control-hover); }
-.mode-btn.active {
-  background: var(--accent);
-  color: var(--accent-text);
-  border-color: var(--accent);
-}
-
 .opt-heading {
   font-size: 0.68rem;
   font-weight: 600;
@@ -533,6 +508,7 @@ select, input, textarea {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.preview-fig figcaption .tip { vertical-align: -1px; }
 /* Hidden until a result arrives (more specific than .preview-fig img). */
 .preview-fig .preview-img { display: none; }
 .preview-fig .preview-img.visible { display: block; }

@@ -23,7 +23,7 @@ log = logging.getLogger("pbr2rad.convert")
 
 @dataclass
 class ConvertOptions:
-    projection: str = "uv"           # "uv" | "planar" | "box"
+    projection: str = "uv"           # "uv" | "planar" | "box" | "cylindrical" | "spherical"
     planar_axis: str = "xy"          # for projection="planar"
     u_scale: float = 1.0
     v_scale: float = 1.0
@@ -69,6 +69,59 @@ class ConvertOptions:
     specularity_override: float | None = None
     diffuse_scale: float = 1.0
 
+    # Also write a preview-only material chain ``preview_<name>.{rad,cal,…}``
+    # next to the exported one: same .hdr/.dat files, but wrapped on a sphere
+    # the way the texture sites render their reference spheres
+    # (``REFERENCE_WRAPS``). Never shipped (the web zip filter drops the
+    # ``preview_`` prefix) and off by default, so CLI output and the golden
+    # hashes are untouched. The web preview renders it instead of the
+    # exported projection so the side-by-side compares like with like.
+    write_preview_variant: bool = False
+    # Which site's wrap convention the preview variant uses ("ambientcg",
+    # "polyhaven"); None → the default (ambientCG's). Uploads use the default.
+    preview_wrap_source: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectionSpec:
+    """How a material chain maps texture space onto geometry (one .cal)."""
+    projection: str
+    axis: str = "xy"
+    u_scale: float = 1.0
+    v_scale: float = 1.0
+    u_offset: float = 0.0
+    v_offset: float = 0.0
+    swap_uv: bool = False      # spherical only: transposed wrap (see cal.spherical)
+
+
+PREVIEW_VARIANT_PREFIX = "preview_"
+
+# How the texture sites wrap a texture on their reference spheres:
+# equirectangular on a UV sphere, poles on Z, a fixed **3 repeats around and
+# 1.5 pole-to-pole** (square texels at the equator; not physical-size based —
+# Bricks058 at 105 cm and Tiles141 at 200 cm show the same density).
+# Measured 2026-08-22 by unwrapping ambientCG's renders: grout/mortar lines
+# every ~20° of longitude and latitude (Tiles141: 6 tiles per repeat → 18
+# around / 9 pole-to-pole; Bricks058: ~17 courses per repeat → 25 per 180°).
+# Poly Haven renders the same way (same density, picture un-rotated: a 2026-08-23
+# survey of 121 directional assets — planks, veneers, corrugated iron, brick
+# walls, tiles — found the texture's orientation preserved on 118, none rotated,
+# 3 unclear; only brick_floor_003's thumbnail disagrees with its own albedo,
+# an outlier; scripts/polyhaven_orientation_survey.py). The
+# web preview sphere is a unit sphere at the world origin — exactly what the
+# spherical .cal is centred on. Per-source entries stay so a source with a
+# different convention can be added without touching the callers.
+REFERENCE_WRAPS: dict[str | None, ProjectionSpec] = {
+    "ambientcg": ProjectionSpec(projection="spherical", axis="xy", u_scale=3.0, v_scale=1.5),
+    "polyhaven": ProjectionSpec(projection="spherical", axis="xy", u_scale=3.0, v_scale=1.5),
+}
+REFERENCE_WRAP = REFERENCE_WRAPS["ambientcg"]      # default (uploads, unknown sources)
+
+
+def reference_wrap(source: str | None) -> ProjectionSpec:
+    """The preview-sphere wrap for a texture source (default: ambientCG's)."""
+    return REFERENCE_WRAPS.get((source or "").lower(), REFERENCE_WRAP)
+
 
 @dataclass
 class ConvertResult:
@@ -85,6 +138,9 @@ class ConvertResult:
     primitive: str
     # ClimateStudio preview file, when one was written.
     pvw_file: Path | None = None
+    # ``preview_<name>.rad`` when ``ConvertOptions.write_preview_variant`` is
+    # set — the reference-wrap chain for the web preview sphere.
+    preview_rad_file: Path | None = None
     # Source-PBR channels that actually fed the Radiance material
     # ("albedo", "normal", "roughness", "metalness"). Anything in the input
     # set but not in this list was ignored (e.g. ao, displacement, or maps
@@ -265,6 +321,88 @@ def convert_set(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+@dataclass(frozen=True)
+class _ChainInputs:
+    """Everything the exported chain and the preview variant share."""
+    hdr_name: str
+    pic_u_scale: float
+    pic_v_scale: float
+    roughness: float
+    metalness: float
+    specularity: float
+    source_note: str | None
+    normal_dats: tuple[str, str, str] | None   # (r, g, b) bare .dat names
+    normal_is_dx: bool
+    bump_scale: float
+    rough_dat: str | None
+    rough_modulation: float
+
+
+def _write_material_chain(
+    out_dir: Path, stem: str, proj: ProjectionSpec, shared: _ChainInputs,
+) -> tuple[Path, Path, rad_mod.MaterialParams]:
+    """Write ``<stem>.cal`` [, ``<stem>_normal.cal``, ``<stem>_rough.cal``] and
+    ``<stem>.rad`` for one projection. Primitive ids derive from ``stem``;
+    the .hdr/.dat files are referenced by name and shared between chains.
+    Returns ``(cal_file, rad_file, params)``."""
+    cal_file = out_dir / f"{stem}.cal"
+    rad_file = out_dir / f"{stem}.rad"
+    cal_text = cal_mod.generate(
+        proj.projection,
+        axis=proj.axis,  # type: ignore[arg-type]
+        u_scale=proj.u_scale,
+        v_scale=proj.v_scale,
+        u_offset=proj.u_offset,
+        v_offset=proj.v_offset,
+        pic_u_scale=shared.pic_u_scale,
+        pic_v_scale=shared.pic_v_scale,
+        swap_uv=proj.swap_uv,
+    )
+    cal_file.write_text(cal_text, encoding="ascii")
+
+    kwargs: dict = {}
+    if shared.normal_dats is not None:
+        normal_cal_name = f"{stem}_normal.cal"
+        # The normal .cal must include projection definitions (u, v)
+        # because texdata's funcfile is the only .cal file it loads.
+        normal_cal_text = cal_text + "\n" + normal_mod.generate_normal_cal(
+            stem, is_dx=shared.normal_is_dx,
+        )
+        (out_dir / normal_cal_name).write_text(normal_cal_text, encoding="ascii")
+        dat_r, dat_g, dat_b = shared.normal_dats
+        kwargs.update(
+            normal_dat_r=dat_r,
+            normal_dat_g=dat_g,
+            normal_dat_b=dat_b,
+            normal_cal_file=normal_cal_name,
+            bump_scale=shared.bump_scale,
+            normal_is_dx=shared.normal_is_dx,
+        )
+    if shared.rough_dat is not None:
+        rough_cal_name = f"{stem}_rough.cal"
+        # Roughness .cal needs projection definitions (u, v) just like normal .cal
+        rough_cal_text = cal_text + "\n" + normal_mod.generate_roughness_cal(stem)
+        (out_dir / rough_cal_name).write_text(rough_cal_text, encoding="ascii")
+        kwargs.update(
+            rough_dat=shared.rough_dat,
+            rough_cal_file=rough_cal_name,
+            rough_modulation=shared.rough_modulation,
+        )
+
+    mat = rad_mod.MaterialParams(
+        name=stem,
+        hdr_file=shared.hdr_name,   # relative — resolved alongside the .rad file
+        cal_file=cal_file.name,
+        roughness=shared.roughness,
+        metalness=shared.metalness,
+        specularity=shared.specularity,
+        source_note=shared.source_note,
+        **kwargs,
+    )
+    rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
+    return cal_file, rad_file, mat
+
+
 def _convert_set_inner(
     pbr: PBRSet,
     out_dir: Path,
@@ -277,8 +415,6 @@ def _convert_set_inner(
         pbr = _apply_orientation(pbr, work_dir, opts)
 
     hdr_file = out_dir / f"{pbr.name}.hdr"
-    cal_file = out_dir / f"{pbr.name}.cal"
-    rad_file = out_dir / f"{pbr.name}.rad"
 
     channels_used: list[str] = []
     channels_estimated: list[str] = []
@@ -317,21 +453,12 @@ def _convert_set_inner(
     avg_rgb = hdr_mod.average_rgb(pbr.albedo, srgb=True)
     channels_used.append("albedo")
 
-    # 3. Projection .cal — the albedo's aspect feeds the colorpict lookup so
+    # 3. Projection: the albedo's aspect feeds the colorpict lookup so
     #    non-square textures (common on ambientCG, e.g. 1024x512) don't get
     #    their picture sampled over half the tile while the .dat maps span it.
+    #    The .cal/.rad files themselves are written by _write_material_chain
+    #    once the .dat maps are known (their .cal files embed the projection).
     pic_u_scale, pic_v_scale = cal_mod.picture_scales(width, height)
-    cal_text = cal_mod.generate(
-        opts.projection,
-        axis=opts.planar_axis,  # type: ignore[arg-type]
-        u_scale=opts.u_scale,
-        v_scale=opts.v_scale,
-        u_offset=opts.u_offset,
-        v_offset=opts.v_offset,
-        pic_u_scale=pic_u_scale,
-        pic_v_scale=pic_v_scale,
-    )
-    cal_file.write_text(cal_text, encoding="ascii")
 
     # 3b. Estimate missing maps from albedo (if enabled). Estimated PNGs are
     # scratch files — consumed by the .dat converters below, never shipped.
@@ -364,11 +491,13 @@ def _convert_set_inner(
     else:
         roughness = 0.5
 
-    # 4. Normal map (optional)
-    normal_kwargs: dict = {}
+    # 4. Normal map (optional) → .dat files (the expensive part; shared by
+    #    every chain written below)
+    normal_dats: tuple[str, str, str] | None = None
+    normal_is_dx = False
     if opts.normal and pbr.normal is not None:
         convention = normal_mod.detect_convention(pbr.maps)
-        is_dx = convention == "dx"
+        normal_is_dx = convention == "dx"
         if had_normal:
             channels_used.append("normal")
         else:
@@ -377,56 +506,50 @@ def _convert_set_inner(
         dat_r, dat_g, dat_b, _nw, _nh = normal_mod.convert_normal_to_dat(
             pbr.normal, out_dir, pbr.name, max_size=opts.dat_resolution,
         )
-        normal_cal_name = f"{pbr.name}_normal.cal"
-        # The normal .cal must include projection definitions (u, v)
-        # because texdata's funcfile is the only .cal file it loads.
-        normal_cal_text = cal_text + "\n" + normal_mod.generate_normal_cal(
-            pbr.name, is_dx=is_dx,
-        )
-        (out_dir / normal_cal_name).write_text(normal_cal_text, encoding="ascii")
+        normal_dats = (dat_r, dat_g, dat_b)
 
-        normal_kwargs = dict(
-            normal_dat_r=dat_r,
-            normal_dat_g=dat_g,
-            normal_dat_b=dat_b,
-            normal_cal_file=normal_cal_name,
-            bump_scale=opts.bump_scale,
-            normal_is_dx=is_dx,
-        )
-
-    # 5. Spatially varying roughness (optional)
-    rough_kwargs: dict = {}
+    # 5. Spatially varying roughness (optional) → .dat
+    rough_dat: str | None = None
     if opts.varying_roughness and pbr.roughness is not None:
         # Roughness already in channels_used from the scalar-average step;
         # the varying-roughness path consumes the same source map.
         rough_dat, _rw, _rh = normal_mod.convert_roughness_to_dat(
             pbr.roughness, out_dir, pbr.name, max_size=opts.dat_resolution,
         )
-        rough_cal_name = f"{pbr.name}_rough.cal"
-        # Roughness .cal needs projection definitions (u, v) just like normal .cal
-        rough_cal_text = cal_text + "\n" + normal_mod.generate_roughness_cal(pbr.name)
-        (out_dir / rough_cal_name).write_text(rough_cal_text, encoding="ascii")
-
-        rough_kwargs = dict(
-            rough_dat=rough_dat,
-            rough_cal_file=rough_cal_name,
-            rough_modulation=opts.rough_modulation,
-        )
 
     source = _read_source_sidecar(pbr.root)
 
-    mat = rad_mod.MaterialParams(
-        name=pbr.name,
-        hdr_file=hdr_file.name,   # relative — resolved alongside the .rad file
-        cal_file=cal_file.name,
+    # 6. The material chains: the exported one (the user's projection) and,
+    #    when asked, the reference-wrap preview variant.
+    shared = _ChainInputs(
+        hdr_name=hdr_file.name,
+        pic_u_scale=pic_u_scale,
+        pic_v_scale=pic_v_scale,
         roughness=roughness,
         metalness=metalness,
         specularity=spec,
         source_note=_source_note(source),
-        **normal_kwargs,
-        **rough_kwargs,
+        normal_dats=normal_dats,
+        normal_is_dx=normal_is_dx,
+        bump_scale=opts.bump_scale,
+        rough_dat=rough_dat,
+        rough_modulation=opts.rough_modulation,
     )
-    rad_file.write_text(rad_mod.generate(mat), encoding="ascii")
+    exported = ProjectionSpec(
+        projection=opts.projection,
+        axis=opts.planar_axis,
+        u_scale=opts.u_scale,
+        v_scale=opts.v_scale,
+        u_offset=opts.u_offset,
+        v_offset=opts.v_offset,
+    )
+    cal_file, rad_file, mat = _write_material_chain(out_dir, pbr.name, exported, shared)
+    preview_rad_file: Path | None = None
+    if opts.write_preview_variant:
+        wrap = reference_wrap(opts.preview_wrap_source or (source or {}).get("source"))
+        _, preview_rad_file, _ = _write_material_chain(
+            out_dir, f"{PREVIEW_VARIANT_PREFIX}{pbr.name}", wrap, shared,
+        )
     reflectance = material_reflectance(
         avg_rgb, primitive=mat.as_primitive(), specularity=spec,
         diffuse_scale=diffuse_scale,
@@ -470,6 +593,7 @@ def _convert_set_inner(
         metalness=metalness,
         primitive=mat.as_primitive(),
         pvw_file=pvw_file,
+        preview_rad_file=preview_rad_file,
         channels_used=channels_used,
         channels_estimated=channels_estimated,
         source=source,

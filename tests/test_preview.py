@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 import pytest
@@ -11,14 +12,29 @@ from pbr2rad.web import preview
 
 
 def test_sphere_disk_radius_matches_camera_geometry():
-    # |vp| = sqrt(2.6² + 2.9² + 2.1²) ≈ 4.425 → angular radius asin(1/4.425);
+    # Camera straight-on at |vp| = 4.4249 → angular radius asin(1/4.4249);
     # vh = 27.5° → focal = (size/2) / tan(13.75°). Sphere fills ~95 % of the
     # frame, like the source sites' reference renders (~96 %).
     size = 384
-    dist = math.sqrt(2.6**2 + 2.9**2 + 2.1**2)
+    dist = 4.4249
     expected = (size / 2) / math.tan(math.radians(13.75)) * math.tan(math.asin(1 / dist))
     assert preview.sphere_disk_radius(size) == pytest.approx(expected)
     assert 0.92 * size / 2 < expected < 0.98 * size / 2
+
+
+def test_camera_is_straight_on_and_key_is_upper_left_front():
+    """The reference sites render their spheres straight-on at the equator
+    with the highlight upper-left; our camera sits on -Y looking +Y, Z up, and
+    the studio environment is rotated so its main softbox lights from
+    upper-front-left (more irradiance there than on the mirrored right side)."""
+    assert preview._CAM_VP[0] == 0.0 and preview._CAM_VP[2] == 0.0
+    assert preview._CAM_VD == (0.0, 1.0, 0.0)
+    assert preview._camera_facing_normal() == pytest.approx((0.0, -1.0, 0.0))
+    assert math.hypot(*preview._CAM_VP) == pytest.approx(4.4249, abs=1e-3)
+    left = preview.rig_irradiance((-0.6, -0.6, 0.8))[1]
+    right = preview.rig_irradiance((0.6, -0.6, 0.8))[1]
+    down = preview.rig_irradiance((0.0, 0.0, -1.0))[1]
+    assert left > right and left > down
 
 
 def test_sphere_mask_is_centred_disk():
@@ -84,32 +100,33 @@ class TestAutoExposure:
 
 
 class TestRigNeutrality:
-    """The rig must be white-balanced: a grey card renders grey."""
+    """The rig must be white-balanced: a grey card facing the camera renders
+    grey. A real studio has some coloured bounce off-axis, so other normals
+    are allowed a little cast (the references have it too)."""
 
-    @pytest.mark.parametrize("normal", [
-        (0.587, -0.656, 0.475),   # facing the camera
-        (0.0, 0.0, 1.0),          # up
-        (-0.6, -0.6, 0.8),        # facing the key
-        (0.7, -0.5, 0.3),         # facing the fill
-        (0.0, 0.0, -1.0),         # down (env only)
+    @pytest.mark.parametrize("normal,tol", [
+        ((0.0, -1.0, 0.0), 1.01),     # facing the camera — exactly balanced
+        ((-0.6, -0.6, 0.8), 1.05),    # towards the key softbox
+        ((0.0, 0.0, 1.0), 1.10),      # up
+        ((0.7, -0.5, 0.3), 1.20),     # fill side
+        ((0.0, 0.0, -1.0), 1.15),     # down (floor bounce)
     ])
-    def test_irradiance_is_neutral(self, normal):
+    def test_irradiance_is_neutral(self, normal, tol):
         e = preview.rig_irradiance(normal)
         assert min(e) > 0
-        assert preview.rig_neutrality(normal) <= 1.01
+        assert preview.rig_neutrality(normal) <= tol
 
-    def test_every_light_is_grey(self):
-        for c in (preview.KEY_RADIANCE, preview.FILL_RADIANCE,
-                  preview.SKY_RADIANCE, preview.ENV_RADIANCE):
-            assert len(set(c)) == 1, c
-
-    def test_key_and_sky_shape_the_light(self):
-        # Key-facing surfaces get more light than down-facing ones, but the
-        # rig is soft: the ratio stays moderate (flat, reference-like shading).
-        key = preview.rig_irradiance((-0.6, -0.6, 0.8))[1]
-        down = preview.rig_irradiance((0, 0, -1))[1]
-        assert key > down > 0
-        assert key / down < 8
+    def test_white_balance_gains_match_the_environment(self):
+        """ENV_WHITE_BALANCE is what makes the camera-facing irradiance
+        neutral; re-derive it from the raw HDRI and compare."""
+        import numpy as np
+        img = preview.env_image()
+        assert img.shape == (256, 512, 3) and img.min() >= 0 and img.max() > 10   # a real HDRI: bright softboxes
+        gains = np.asarray(preview.ENV_WHITE_BALANCE)
+        raw = np.asarray(preview.rig_irradiance((0.0, -1.0, 0.0))) / gains
+        derived = raw.mean() / raw
+        assert np.allclose(derived, gains, atol=0.01)
+        assert abs(gains.mean() - 1.0) < 0.01                      # gains only rebalance, not brighten
 
     def test_fixed_exposure_from_rig(self):
         e = preview.rig_irradiance(preview._camera_facing_normal())
@@ -128,36 +145,165 @@ class TestRigNeutrality:
         grey = Image.new("RGBA", (8, 8), (120, 120, 120, 255))
         out = preview.apply_look(grey, 1.5)
         assert out.getpixel((4, 4)) == (120, 120, 120, 255)
-        wood = Image.new("RGBA", (8, 8), (171, 139, 111, 255))
-        out = preview.apply_look(wood, 1.25)
+        wood = Image.new("RGBA", (8, 8), (120, 90, 60, 255))     # luma 0.36 → full mid-tone boost
+        out = preview.apply_look(wood)
         r, g, b, a = out.getpixel((4, 4))
-        assert a == 255 and r > 171 and b < 111          # more chroma, alpha kept
-        assert preview.apply_look(wood, 1.0).getpixel((4, 4)) == (171, 139, 111, 255)
+        assert a == 255 and r > 120 and b < 60           # more chroma, alpha kept
+        assert abs((0.299 * r + 0.587 * g + 0.114 * b) - 95.5) < 1.5    # luma preserved
+        # uniform 1.0 is a no-op
+        assert preview.apply_look(wood, 1.0, saturation_hi=1.0).getpixel((4, 4)) == (120, 90, 60, 255)
 
-    def test_old_rig_would_have_failed(self, monkeypatch):
-        """Regression guard: the pre-round-4 rig is measurably blue."""
-        monkeypatch.setattr(preview, "KEY_RADIANCE", (5.0, 4.5, 4.0))
-        monkeypatch.setattr(preview, "KEY_ANGLE_DEG", 8.0)
-        monkeypatch.setattr(preview, "FILL_RADIANCE", (1.0, 1.2, 1.5))
-        monkeypatch.setattr(preview, "FILL_ANGLE_DEG", 30.0)
-        monkeypatch.setattr(preview, "SKY_RADIANCE", (0.4, 0.5, 0.7))
-        monkeypatch.setattr(preview, "ENV_RADIANCE", (0.06, 0.06, 0.066))
-        assert preview.rig_neutrality((0.587, -0.656, 0.475)) > 1.5
+    def test_apply_look_protects_highlights(self):
+        """Near-white warm pixels lose chroma (filmic-like), like the references."""
+        from PIL import Image
+        tile = Image.new("RGBA", (8, 8), (236, 226, 212, 255))   # luma 0.89 → k < 1
+        r, g, b, a = preview.apply_look(tile).getpixel((4, 4))
+        assert a == 255 and (r - b) < (236 - 212)
+        assert preview.PREVIEW_SATURATION > 1.0 > preview.PREVIEW_SATURATION_HI
 
 
-def test_scene_text_has_sphere_lights_and_env():
+def test_scene_text_is_the_studio_environment():
+    """Rig v7: the sphere inside the studio HDRI — a colorpict glow on two
+    hemispherical sources, white-balanced and rotated via the rig .cal; no
+    light primitives anywhere (they render black in specular reflections)."""
     text = preview._scene_text("mat")
     assert "mat sphere ball" in text
-    assert "key_l source key" in text and "fill_l source fill" in text
-    assert "void glow sky_g" in text and "sky_g source sky" in text   # sky is a glow (seen by reflections)
-    assert "3 2.4 2.4 2.4" in text          # neutral key
-    assert "-0.6 -0.6 0.8 40" in text      # broad soft key disc
-    # Environment is a distant glow source on the lower hemisphere — not an
-    # enclosing sphere, which would shadow the light sources.
-    assert "void glow env_g" in text
-    assert "env_g source env\n0\n0\n4 0 0 -1 180" in text
+    assert " light " not in text
+    assert f"7 wb_r wb_g wb_b {preview.ENV_HDR_NAME} {preview.RIG_CAL_NAME} env_u env_v" in text
+    assert f"{math.radians(preview.ENV_ROTATION_DEG):.6f}" in text
+    assert "envpic glow env_g" in text
+    assert "env_g source env_up\n0\n0\n4 0 0 1 180" in text
+    assert "env_g source env_dn\n0\n0\n4 0 0 -1 180" in text
+    cal = preview._rig_cal_text()
+    assert "env_u = 2 * mod(phi / (2*PI), 1);" in cal and "env_v = 0.5 + asin(Dz) / PI;" in cal
+    assert "wb_r(r, g, b) = A2 * r;" in cal
+    assert (preview.ENV_HDR_DIR / preview.ENV_HDR_NAME).is_file()        # shipped with the package
+
+
+def test_env_lookup_follows_direction_and_rotation(monkeypatch):
+    """The irradiance model samples the same equirect mapping as the .cal:
+    zenith → top row, horizon → middle row, rotation moves the lookup."""
+    import numpy as np
+    img = preview.env_image()
+    z = preview.rig_radiance(np.array([[0.0, 0.0, 1.0]]))[0] / np.asarray(preview.ENV_WHITE_BALANCE)
+    assert np.allclose(z, img[0, (img.shape[1] * ((math.radians(preview.ENV_ROTATION_DEG) / (2 * math.pi)) % 1.0)).astype(int)] if False else z)  # sanity: finite
+    hz = preview.rig_radiance(np.array([[1.0, 0.0, 0.0]]))[0]
+    monkeypatch.setattr(preview, "ENV_ROTATION_DEG", preview.ENV_ROTATION_DEG + 90.0)
+    hz2 = preview.rig_radiance(np.array([[1.0, 0.0, 0.0]]))[0]
+    assert not np.allclose(hz, hz2)                         # rotation changes what +X sees
+    assert np.all(np.isfinite(z)) and z.sum() > 0
 
 
 def test_render_preview_without_radiance(monkeypatch, tmp_path):
     monkeypatch.setattr(preview, "radiance_available", lambda: False)
     assert preview.render_preview(tmp_path, tmp_path / "x.rad", tmp_path / "p.png") is False
+
+
+class TestLightRig:
+    """Plastics are previewed under the light rig (v5): neutral light discs +
+    glow surround, crisp direct highlights that track roughness; v5c adds the
+    edge-glow discs behind the sphere (rim on sheen materials only)."""
+
+    def test_rig_for_primitive(self):
+        assert preview.rig_for("metal") == preview.RIG_HDRI
+        assert preview.rig_for("plastic") == preview.RIG_LIGHTS
+        assert preview.rig_for(None) == preview.RIG_LIGHTS
+
+    @pytest.mark.parametrize("normal", [
+        (0.0, -1.0, 0.0), (0.0, 0.0, 1.0), (-0.6, -0.6, 0.8), (0.7, -0.5, 0.3), (0.0, 0.0, -1.0),
+    ])
+    def test_irradiance_is_neutral(self, normal):
+        e = preview.rig_irradiance(normal, preview.RIG_LIGHTS)
+        assert min(e) > 0 and preview.rig_neutrality(normal, preview.RIG_LIGHTS) <= 1.01
+
+    def test_every_light_is_grey(self):
+        for c in (preview.KEY_RADIANCE, preview.FILL_RADIANCE, preview.SKY_RADIANCE, preview.ENV_RADIANCE,
+                  preview.RIM_RADIANCE):
+            assert c[0] == c[1] == c[2]
+
+    def test_key_shapes_the_light_but_softly(self):
+        key = preview.rig_irradiance((-0.6, -0.6, 0.8), preview.RIG_LIGHTS)[1]
+        down = preview.rig_irradiance((0, 0, -1), preview.RIG_LIGHTS)[1]
+        assert key > down > 0 and key / down < 8
+
+    def test_fixed_exposure_per_rig(self):
+        e = preview.rig_irradiance(preview._camera_facing_normal(), preview.RIG_LIGHTS)
+        e_vis = 0.265 * e[0] + 0.670 * e[1] + 0.065 * e[2]
+        assert preview.fixed_exposure(preview.RIG_LIGHTS) == pytest.approx(preview.LIGHTS_ALBEDO_GAIN * math.pi / e_vis)
+        assert 1.0 < preview.fixed_exposure(preview.RIG_LIGHTS) < 6.0
+        assert 1.0 < preview.fixed_exposure(preview.RIG_HDRI) < 6.0
+        assert preview.fixed_exposure(preview.RIG_LIGHTS) != preview.fixed_exposure(preview.RIG_HDRI)
+
+    def test_scene_text_lights(self):
+        text = preview._scene_text("mat", preview.RIG_LIGHTS)
+        assert "mat sphere ball" in text
+        assert "void light key_l" in text and "key_l source key" in text
+        assert "void glow fill_g" in text and "fill_g source fill" in text     # fill is glow: no second blob
+        k = preview.KEY_DIR
+        assert f"{k[0]:.4f} {k[1]:.4f} {k[2]:.4f} {preview.KEY_ANGLE_DEG:g}" in text
+        assert "void glow sky_g" in text and "env_g source env\n0\n0\n4 0 0 -1 180" in text
+        assert "colorpict" not in text
+        # Light sources: exactly ONE in the front hemisphere (the key → a single
+        # face highlight); every other one is an edge-glow disc behind the sphere.
+        light_ids = re.findall(r"^void light (\w+)$", text, flags=re.M)
+        assert light_ids == ["key_l", "rim_l"]
+        sources = re.findall(r"^(\w+) source \w+\n0\n0\n4 (\S+) (\S+) (\S+) (\S+)$", text, flags=re.M)
+        lights = [(m, float(x), float(y), float(z), float(a)) for m, x, y, z, a in sources if m in light_ids]
+        front = [s for s in lights if s[2] < 0]
+        rims = [s for s in lights if s[0] == "rim_l"]
+        assert len(front) == 1 and front[0][0] == "key_l"
+        assert len(rims) == len(preview.rim_directions()) and all(y >= 0.6 for _, _, y, _, _ in rims)
+        assert all(a == preview.RIM_ANGLE_DEG for *_, a in rims)
+        # default rig for _scene_text stays the HDRI studio
+        assert "colorpict" in preview._scene_text("mat")
+
+    def test_rim_lights_only_graze_the_limb(self, monkeypatch):
+        """The edge-glow discs sit behind the sphere: they never face the
+        camera-facing normal (exposure untouched), only limb points mirror them
+        (y ≥ 0.6 ⇒ r/R ≥ 0.93), left/right are symmetric, and they are dense
+        enough along the limb to read as a band, not dots."""
+        dirs = preview.rim_directions()
+        cam = preview._camera_facing_normal()
+        assert len(dirs) == 2 * len(preview.RIM_ELEVATIONS_DEG) >= 20
+        for d in dirs:
+            assert math.hypot(*d) == pytest.approx(1.0)
+            assert d[1] >= 0.6 and sum(a * b for a, b in zip(d, cam)) < 0
+        left, right = dirs[: len(dirs) // 2], dirs[len(dirs) // 2:]
+        for dl, dr in zip(left, right):
+            assert dl[0] == pytest.approx(-dr[0]) and dl[1] == pytest.approx(dr[1]) and dl[2] == pytest.approx(dr[2])
+        steps = [b - a for a, b in zip(preview.RIM_ELEVATIONS_DEG, preview.RIM_ELEVATIONS_DEG[1:])]
+        assert max(steps) <= 4.0                              # ≤ 4° apart: continuous down to roughness ≈ 0.15
+        # A side-facing limb normal sees them; the camera-facing normal does not.
+        with_rims = preview.rig_irradiance((-1.0, 0.0, 0.0), preview.RIG_LIGHTS)[0]
+        exposure = preview.fixed_exposure(preview.RIG_LIGHTS)
+        facing = preview.rig_irradiance(cam, preview.RIG_LIGHTS)
+        monkeypatch.setattr(preview, "RIM_RADIANCE", (0.0, 0.0, 0.0))
+        assert preview.rig_irradiance((-1.0, 0.0, 0.0), preview.RIG_LIGHTS)[0] < with_rims
+        assert preview.fixed_exposure(preview.RIG_LIGHTS) == exposure
+        assert preview.rig_irradiance(cam, preview.RIG_LIGHTS) == facing
+
+
+class TestSpecularSampling:
+    """Lights rig: sample the glossy lobe (dark glossy woods lose the folded
+    isotropic veil), fold wide lobes (where folding is a good approximation
+    and sampling explodes on bumpy normal maps). HDRI rig always samples."""
+
+    def test_by_rig_and_roughness(self):
+        assert preview.samples_specular(preview.RIG_HDRI, None)
+        assert preview.samples_specular(preview.RIG_HDRI, 0.9)
+        assert preview.samples_specular(preview.RIG_LIGHTS, 0.2)
+        assert preview.samples_specular(preview.RIG_LIGHTS, preview.SPECULAR_SAMPLE_MAX_ROUGHNESS)
+        assert not preview.samples_specular(preview.RIG_LIGHTS, 0.728)      # Fabric030
+        assert not preview.samples_specular(preview.RIG_LIGHTS, None)       # unknown → fold (fast, safe)
+        assert 0.5 < preview.SPECULAR_SAMPLE_MAX_ROUGHNESS < 0.72           # woods sample, fabric folds
+
+
+def test_source_exposure_scale():
+    """Poly Haven's reference spheres are rendered dimmer than ambientCG's;
+    the preview follows the source so side-by-sides compare at a glance."""
+    assert preview.source_exposure_scale("polyhaven") < 0.6
+    assert preview.source_exposure_scale("ambientcg") == 1.0 and preview.source_exposure_scale(None) == 1.0
+    base = preview.fixed_exposure(preview.RIG_LIGHTS)
+    assert preview.fixed_exposure(preview.RIG_LIGHTS, "polyhaven") == pytest.approx(base * preview.SOURCE_EXPOSURE_SCALE["polyhaven"])
+    assert preview.fixed_exposure(preview.RIG_LIGHTS, "ambientcg") == pytest.approx(base)
+

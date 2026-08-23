@@ -611,6 +611,40 @@ class TestRerender:
         r = client.post("/api/v1/jobs/doesnotexist/rerender", json={"specularity": 1.5})
         assert r.status_code == 422
 
+    def test_web_always_renders_reference_wrap(self, client, monkeypatch):
+        """The web app always writes the reference-wrap chain for the preview
+        sphere (preview_<name>.rad) next to the exported chain; nothing about
+        it leaks into the job state, the response or the options."""
+        from pbr2rad.web import tempdir
+
+        def fake_download(asset_id, dest, *, resolution, fmt, verbose=False):
+            mat_dir = Path(dest) / "Bricks104"
+            mat_dir.mkdir(parents=True)
+            (mat_dir / "Bricks104_1K-JPG_Color.png").write_bytes(_png_bytes(16, (128, 128, 128)))
+            return mat_dir
+
+        monkeypatch.setattr("pbr2rad.ambientcg.download_texture_set", fake_download)
+        monkeypatch.setattr(api_mod, "radiance_available", lambda: False)
+        resp = client.post("/api/v1/sources/ambientcg/convert",
+                           json={"asset_id": "Bricks104", "resolution": "1k", "fmt": "jpg"})
+        assert resp.status_code == 200, resp.text
+        job = resp.json()["job_id"]
+        assert "preview_mapping" not in resp.json()
+        state = tempdir.read_job_state(job)
+        assert "preview_mapping" not in state and "preview_mapping" not in state["options"]
+        out = tempdir.get_output_dir(job)
+        names = {p.name for p in out.rglob("*")}
+        assert {"Bricks104.rad", "Bricks104.cal", "preview_Bricks104.rad", "preview_Bricks104.cal"} <= names
+        r2 = client.post(f"/api/v1/jobs/{job}/rerender", json={"roughness": 0.3})
+        assert r2.status_code == 200, r2.text
+        names = {p.name for p in out.rglob("*")}
+        assert "preview_Bricks104.rad" in names and "Bricks104.rad" in names
+        # The exported chain carries the user's projection; the preview chain the wrap.
+        exported = next(out.rglob("Bricks104.cal")).read_text()
+        wrap = next(out.rglob("preview_Bricks104.cal")).read_text()
+        assert "spherical" in wrap and "u_scale : 3" in wrap and "transposed" not in wrap
+        assert "spherical" not in exported
+
     def test_rerender_upload_job_with_labels(self, client, monkeypatch):
         from pbr2rad.web import tempdir
         monkeypatch.setattr(api_mod, "radiance_available", lambda: False)

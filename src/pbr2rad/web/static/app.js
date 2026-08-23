@@ -69,7 +69,9 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 // Conversion settings (Maps & Projection tab): a change applies to the next
-// conversion and, when a result is showing, re-renders it.
+// conversion and, when a result is showing, re-renders it. (The preview
+// sphere always shows the source-style wrap — see the note under the
+// previews — so projection edits show up in the export, not the sphere.)
 document.getElementById("advanced-options").addEventListener("change", () => {
   if (currentJob) scheduleRerender();
 });

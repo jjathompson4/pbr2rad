@@ -124,6 +124,141 @@
 
 ### Changed
 
+- **Per-source preview exposure.** Poly Haven renders its reference spheres
+  much dimmer than ambientCG (≈ 0.45× their albedos vs ≈ 1.07×), so a Poly
+  Haven material is now previewed at 0.41× the ambientCG-calibrated exposure
+  (`preview.SOURCE_EXPOSURE_SCALE`); uploads use the ambientCG calibration.
+  Material unchanged. Also noted under About → Known limitations: some
+  ambientCG wood reference renders are warmer and brighter than their own
+  colour maps (Wood Floor 051/052: ×1.86 R / ×1.05 B vs the map) while
+  Poly Haven's track theirs — the preview shows the map as it is.
+- **Two preview rigs (per primitive).** Plastics/dielectrics are previewed
+  under the **light rig**: one broad neutral `light` key disc (1.6 @ 50°,
+  upper-front-left where the texture sites' single highlight sits) + a broad
+  `glow` fill disc (fills shadows via the ambient pass but adds no second
+  specular blob — two `light` discs gave every glossy wood a second highlight
+  the references don't have) + neutral glow sky/env, `-ab 2 -ad 1024`: crisp,
+  noise-free direct highlights that track the roughness slider, ~2 s per
+  sphere, calibrated to the ambientCG references (Concrete034 190 vs 190,
+  Tiles141 216/210/203 vs 215/211/206, Bricks104 179/134/117 vs
+  180/132/108, |Δlog L| 0.013; gain 1.21). Metals are
+  previewed under the **studio HDRI rig** below, because a near-mirror needs
+  a real environment to reflect and `light` sources read as black discs in
+  mirrors. `preview.rig_for(primitive)` picks; the backdrop changes with the
+  primitive when the metalness slider crosses 0.5.
+  **Edge glow (light rig v5c).** The texture sites' renders show a bright rim
+  along the left and right limb on sheen materials (ambientCG Wood028: 3–4×
+  the sphere mean over the outer ~12 % of the radius; WoodFloor052: a thin
+  bright line at the left edge; Poly Haven oak 2.5× both sides) and none on
+  matte ones (Concrete034's limb is flat) — the bright surroundings seen
+  through the glossy lobe at grazing angles. Ours was flat at the limb on
+  everything. Radiance's `plastic` applies its Fresnel term only to
+  roughness-0 specular, `glow` never enters the direct calculation and with
+  `-st 0.15` / 5 % specular no specular rays are traced, so the glow surround
+  can't make a rim; dim `light` discs **behind** the sphere can (Gaussian lobe
+  in the direct calculation, peak ∝ 1/α²·1/cos θi → strong on glossy, nothing
+  on matte, and the roughness slider drives it: a crisp line at 0.2, a soft
+  band at 0.35, faint at 0.7). A source β° from straight behind is mirrored
+  only by limb points at r/R ≈ 0.93–0.99, never by the face — no second
+  highlight. Radiance evaluates a distant `source` at its centre only, so one
+  disc gives a dash and a sparse row gives dots at low roughness; the rim is
+  therefore an **arc of 34 small discs per side, 3° apart** (5° discs, 4.14
+  each, E ≈ 0.84 per side, 44° from +Y, elevations −40°…+60°), continuous
+  down to roughness ≈ 0.15. They face away from the camera-facing normal, so
+  the fixed exposure and gain are unchanged. Result vs the references (limb
+  band ÷ sphere mean, left/right): Wood028 0.5/1.0 → 2.4/2.45 (ref 2.9/4.1),
+  WoodFloor052 0.9/1.0 → 1.7/1.7, Concrete034 1.20/1.26 (ref left 1.24);
+  mean |Δlog L| 0.106 → 0.111.
+- **Dark glossy woods no longer grey and foggy (sampled specular in the light
+  rig).** rpict's default specular threshold (`-st 0.15`) folds any specular
+  reflectance below it — our plastics' 5 % — into the ambient reflectance: an
+  **isotropic veil** L = ρs·E_amb/π on every material, regardless of its own
+  colour. Wood028's mean linear albedo luma is 0.013, so the veil was 3.5×
+  the wood's own diffuse (predicted face 0.060 vs 0.016 without; the actual
+  render measured 0.056; ambientCG's reference face is 0.033) — dark woods
+  rendered grey, and lowering the Specular slider "helped" by shrinking the
+  veil. Fix: the light rig now **samples the lobe** (`-st 0.02 -ss 8`, 2×
+  supersample + Gaussian pfilt reduce like the HDRI rig) for materials with
+  mean roughness ≤ 0.6 (`preview.samples_specular`) — the 5 % then reflects
+  the surround directionally (dark sky reflects dark; the fill reads as a
+  soft sheen): Wood028's face drops 0.056 → 0.047. Above 0.6 the render
+  keeps folding: a wide lobe reflects near-isotropically anyway, and sampling
+  it through a strong normal map re-enters the sphere and explodes the
+  render (Fabric030: 49 s at 192 px). Perf notes that made this fit in the
+  same budget: `-dt`/`-dc` back at rpict defaults (forcing `-dt 0` made
+  every ambient self-hit test all 68 rim sources — Fabric030 11 s → 1.7 s)
+  and `-ps 2` adaptive pixel sampling (visually identical here; the direct
+  loop runs on far fewer points). Timings: glossy ≈ 4.1 s, rough ≈ 1.5–1.7 s
+  per sphere. Calibration unchanged (gain 1.21; concrete/tiles/bricks mean
+  |Δlog L| 0.111).
+- **Preview lighting rig v7 — a real studio (image-based), for metals.**
+  Radiance returns black for a specular ray that hits a `light` source (the
+  direct calculation is meant to supply that highlight), so near-mirror
+  metals showed the key and fill as black discs, and a disc-based glow rig
+  (tried as v6) still read as blobs on grey. The preview sphere now sits
+  inside Poly Haven's CC0 **Studio Small 09** HDRI (`web/assets/
+  studio_small_09_512.hdr`, 512 × 256, attribution in `web/assets/README.md`)
+  used as a `colorpict` pattern on two glow hemispheres: chrome reflects
+  actual softboxes, walls and floor; glossy materials pick up the same soft
+  highlights the texture sites' renders show — plastics' 5 % specular lobe is
+  now actually sampled against the studio (`-st 0.02 -ss 8`; Radiance's
+  default `-st 0.15` would fold it into diffuse, which briefly killed the
+  sheen and the roughness slider's effect), rendered at 2× and reduced with
+  `pfilt -r 0.6` so the glossy sampling is smooth (~4 s per sphere); diffuse
+  shading comes from the ambient pass (`-ab 1 -ad 1024 -as 512`) and is as
+  flat as theirs (top/bottom 1.11–1.19 vs their 1.08–1.26). The environment is
+  rotated so its main softbox is upper-front-left (`ENV_ROTATION_DEG`) and
+  white-balanced per channel (`ENV_WHITE_BALANCE`) so a grey card renders
+  grey; `rig_radiance` / `rig_irradiance` sample the same image, and a new
+  `hdr.read_hdr` decodes RGBE for that. Calibration (sphere mean RGB vs the
+  ambientCG reference): Concrete034 190/189/187 vs 190/189/186, Tiles141
+  217/209/200 vs 215/211/206, Bricks104 182/133/115 vs 180/132/108 (|Δlog L|
+  0.017), WoodFloor052 167/132/104 vs 201/149/94, Fabric030 108 vs 117,
+  Grass005 111/141/64 vs 96/122/44 (brighter: their grass self-shadows),
+  Metal049A 134 vs 107; exposure gain 1.15. Display look: mid-tone
+  saturation ×1.25 tapering to ×0.80 at white — swept against nine
+  references (four woods): 1.10 starved the woods, a flat 1.25 warmed
+  near-whites, 1.35 turned polished woods orange; the woods disagree among
+  themselves (their polished ones carry a Fresnel sheen a Radiance plastic
+  lacks). Override Properties: Bump × range 0–5.
+- **Preview sphere matches the source render.** The Output panel's Radiance
+  render now compares like with like against the source site's sphere: both
+  wrap the texture the way ambientCG / Poly Haven render their reference
+  spheres: equirectangular on a UV sphere, poles top/bottom, a fixed **3
+  repeats around and 1.5 pole-to-pole** (square texels; not physical-size
+  based — Paving Stones 151 at 540 cm, Bricks 058 at 105 cm and Tiles 140/141
+  at 200 cm all show the same density; Poly Haven's spheres wrap the same
+  way — a survey of 121 directional assets found the texture un-rotated on
+  118 and rotated on none, `brick_floor_003`'s thumbnail being the lone visual
+  outlier), from a camera straight-on at the
+  equator (was a 3/4 view) with the key light upper-left like theirs. An ⓘ
+  on the render's caption says the export projection is chosen separately in
+  Maps & Projection and defaults to Box/Triplanar (what ClimateStudio needs).
+  The exported material is unchanged. Mechanics:
+  `convert_set` writes an extra preview-only chain
+  `preview_<name>.{rad,cal,_normal.cal,_rough.cal}` (same .hdr/.dat) when
+  `ConvertOptions.write_preview_variant` is set (`ConvertResult.
+  preview_rad_file`; the web app always sets it, the CLI never does); the
+  web app renders that chain and never ships it. The ClimateStudio `.pvw`
+  thumbnail follows the preview. Rig: ENV glow 0.06 → 0.10 (= sky) so the
+  equatorial view isn't top-heavy and near-mirror metals show no hard
+  horizon line (superseded by rig v6 above). Look: the display-only
+  saturation is luminance-aware (Rec.601 luma preserved; mid-tones boosted,
+  highlights protected — the references behave like a filmic view
+  transform, more saturated in the mids and desaturated in the highlights),
+  which removes the warm cast on near-white materials. Re-calibration (sphere mean RGB vs ambientCG reference, up/lo =
+  upper/lower half luminance): Concrete034 189 vs 190 (up/lo 1.33 vs 1.13),
+  Tiles141 216/210/203 vs 215/211/206 (1.28 vs 1.08), Bricks104 182/130/110
+  vs 180/132/108 (1.36 vs 1.26), Grass005 99/131/49 vs 96/122/44,
+  WoodFloor052 166/130/98 vs 201/149/94, Fabric030 99 vs 117 (both darker:
+  the references' glossy sheen under a bright studio HDRI, not exposure),
+  Metal049A 140 vs 107 (the known near-mirror limitation); mean |Δlog L|
+  over concrete/tiles/bricks 0.008. VLR readout audited: diffuse = C·(1−spec),
+  specular = spec (plastic) / C·spec (metal), Radiance's photopic weights,
+  linear-space albedo mean — unchanged. Calibration loop kept as
+  `scripts/preview_calibration.py`; design notes in
+  `docs/preview-scale-notes.md`. The preview's scene file is now
+  `preview.scene.rad`.
 - **Phone widths are serviceable.** A ≤640 px rule set: header keeps
   pbr2rad · Experimental · About · theme on one line (tagline hidden),
   slider rows become two lines (label + derived hint, then slider + value)
