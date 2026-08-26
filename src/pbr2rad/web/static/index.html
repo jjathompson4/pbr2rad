@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=35">
+  <link rel="stylesheet" href="/static/style.css?v=37">
 </head>
 <body>
 
@@ -46,25 +46,38 @@
   </div>
   <div class="about-body">
     <h3>What it does</h3>
-    <p>Turns a PBR texture set — colour, roughness, metalness and normal maps from ambientCG, Poly Haven, or your own files — into a ready-to-use Radiance material: the images as HDR/<code>.dat</code> data, the <code>.cal</code> projection, and a <code>plastic</code>/<code>metal</code> primitive with calibrated reflectance, zipped together with a preview render.</p>
+    <ul class="about-list">
+      <li>Converts a PBR texture set (ambientCG · Poly Haven · your uploads) into a ready-to-use Radiance material.</li>
+      <li>The zip: images as HDR/<code>.dat</code>, the <code>.cal</code> projection, a <code>plastic</code>/<code>metal</code> primitive with calibrated reflectance, and a preview.</li>
+    </ul>
 
     <h3>Why</h3>
-    <p>Photoreal textured materials in Radiance are usually expert-mode work: hand-writing <code>.cal</code> functions, converting images to HDR, guessing at reflectance. pbr2rad does that conversion for you, so you get physically plausible, textured materials without the ritual — and it reports the visible reflectance so the result stays defensible for lighting analysis.</p>
+    <ul class="about-list">
+      <li>Textured Radiance materials are normally expert-mode: hand-written <code>.cal</code>, HDR conversion, guessed reflectance.</li>
+      <li>pbr2rad does the conversion and reports the visible reflectance, so results stay defensible for lighting analysis.</li>
+    </ul>
 
     <h3>Intended workflow · ClimateStudio</h3>
-    <p>Pick or upload a texture set → tune it against the reference render → Download the .zip → drop the material folder into ClimateStudio's custom materials library → assign it in Rhino from the ClimateStudio material picker. The output is plain Radiance, so it also works in any other Radiance-based tool.</p>
+    <ul class="about-list">
+      <li>Pick or upload materials → tune against the reference → Download → drop the folder into ClimateStudio's custom materials library → assign in Rhino.</li>
+      <li>The output is plain Radiance; it works in any Radiance-based tool.</li>
+    </ul>
 
     <h3>Status</h3>
-    <p>pbr2rad is an experiment by <a href="https://thompsonjeff.com" target="_blank" rel="noopener">Jeff Thompson</a>, not a Solemma product. It has been built with approval for use from the ClimateStudio developers, who have accommodated pbr2rad materials on their side. Textures are CC0 from ambientCG and Poly Haven. Questions or ideas: <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.</p>
+    <ul class="about-list">
+      <li>An experiment by <a href="https://thompsonjeff.com" target="_blank" rel="noopener">Jeff Thompson</a> (not a Solemma product), built with approval from the ClimateStudio developers, who have accommodated pbr2rad materials on their side.</li>
+      <li>Textures are CC0 (ambientCG, Poly Haven).</li>
+      <li>Questions or ideas: <a href="mailto:jt@thompsonjeff.com">jt@thompsonjeff.com</a>.</li>
+    </ul>
 
     <h3>Known limitations</h3>
     <ul class="about-list">
-      <li><strong>Perforated / cut-out materials</strong> (perforated sheet metal, fences, nets, anything with an opacity map) convert as solid surfaces for now — the opacity map isn't used yet.</li>
-      <li>Displacement and ambient-occlusion maps are not used; only colour, roughness, metalness and normal maps drive the material.</li>
-      <li>The preview sphere is lit by one small studio HDRI; the source sites use their own studios, so reflections in mirror-like metals won't match theirs exactly.</li>
-      <li><strong>ClimateStudio support</strong> — pbr2rad materials will likely only appear correctly in ClimateStudio material browser from the latest v2.4x stable release candidate onward; earlier builds may not display textured materials properly in the material browser.</li>
-      <li>Some ambientCG wood reference renders are warmer and brighter than their own colour maps (Poly Haven's track theirs); our sphere shows the map as it is — which is what ClimateStudio will render.</li>
+      <li><strong>ClimateStudio support</strong>: pbr2rad materials will likely only appear correctly in ClimateStudio material browser from the latest v2.4x stable release candidate onward; earlier builds may not display textured materials properly in the material browser.</li>
+      <li>Some ambientCG wood references are warmer and brighter than their own colour maps; our sphere shows the map as it is, which is what ClimateStudio will render.</li>
       <li>Textures are capped at 2k for conversion.</li>
+      <li><strong>Perforated / cut-out materials</strong> (anything with an opacity map) convert as solid surfaces for now.</li>
+      <li>Displacement and ambient-occlusion maps are not used; colour, roughness, metalness and normal maps drive the material.</li>
+      <li>The preview's studio HDRI isn't the source sites' studio, so mirror-metal reflections won't match theirs exactly.</li>
     </ul>
   </div>
 </dialog>
@@ -140,7 +153,7 @@
       </figure>
       <figure class="preview-fig" id="preview-out-fig">
         <img class="preview-img" id="preview-img" alt="Preview render">
-        <figcaption id="preview-cap" style="display:none">pbr2rad · Radiance <span class="tip" data-tip="The downloaded material&#x27;s projection can be set in Maps &amp; Projection; it defaults to Box/Triplanar, which is what ClimateStudio needs for most use-cases." tabindex="0" role="img" aria-label="The downloaded material&#x27;s projection can be set in Maps &amp; Projection; it defaults to Box/Triplanar, which is what ClimateStudio needs for most use-cases."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></figcaption>
+        <figcaption id="preview-cap" style="display:none">pbr2rad · Radiance <span class="tip" data-tip="Rendered from your bitmaps&#x27; real colour data, unenhanced, so it may not match the source site&#x27;s render exactly." tabindex="0" role="img" aria-label="Rendered from your bitmaps&#x27; real colour data, unenhanced, so it may not match the source site&#x27;s render exactly."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></figcaption>
       </figure>
     </div>
 
@@ -159,7 +172,7 @@
           <div class="opt-heading">Projection</div>
           <div class="opt-grid-2-1">
             <div class="option-group">
-              <label>Mode <span class="tip" data-tip="How the texture is placed on geometry. Box (triplanar) needs no UVs; Planar projects along one axis pair; UV uses the mesh&#x27;s own UVs (Radiance 6 Lu/Lv); Cylindrical/Spherical wrap around the object." tabindex="0" role="img" aria-label="How the texture is placed on geometry. Box (triplanar) needs no UVs; Planar projects along one axis pair; UV uses the mesh&#x27;s own UVs (Radiance 6 Lu/Lv); Cylindrical/Spherical wrap around the object."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></label>
+              <label>Mode <span class="tip" data-tip="How the texture is placed on geometry. Box (triplanar) needs no UVs; Planar projects along one axis pair; UV uses the mesh&#x27;s own UVs (Radiance 6 Lu/Lv); Cylindrical/Spherical wrap around the object. Default is Box/Triplanar, what ClimateStudio needs for most use-cases." tabindex="0" role="img" aria-label="How the texture is placed on geometry. Box (triplanar) needs no UVs; Planar projects along one axis pair; UV uses the mesh&#x27;s own UVs (Radiance 6 Lu/Lv); Cylindrical/Spherical wrap around the object. Default is Box/Triplanar, what ClimateStudio needs for most use-cases."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></label>
               <select id="opt-projection">
                 <option value="uv">UV (mesh UVs)</option>
                 <option value="planar">Planar</option>
@@ -194,7 +207,7 @@
             <label class="checkbox-row"><input type="checkbox" id="opt-normal" checked><span>Use normal map</span></label>
             <span class="tip" data-tip="Emit the normal map as a Radiance texdata perturbation (bump mapping). Off = flat shading from the colour map only. Its strength is the Bump slider under Override Properties." tabindex="0" role="img" aria-label="Emit the normal map as a Radiance texdata perturbation (bump mapping). Off = flat shading from the colour map only. Its strength is the Bump slider under Override Properties."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span>
             <label class="checkbox-row"><input type="checkbox" id="opt-varying-rough"><span>Roughness map → brightness (legacy)</span></label>
-            <span class="tip" data-tip="Opt-in, for back-compat. Emits a brightdata pattern from the roughness map — but a Radiance pattern scales the material&#x27;s colour (its diffuse reflectance), not its roughness, so rough areas just get darker." tabindex="0" role="img" aria-label="Opt-in, for back-compat. Emits a brightdata pattern from the roughness map — but a Radiance pattern scales the material&#x27;s colour (its diffuse reflectance), not its roughness, so rough areas just get darker."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span>
+            <span class="tip" data-tip="Opt-in, for back-compat. Emits a brightdata pattern from the roughness map, but a Radiance pattern scales the material&#x27;s colour (its diffuse reflectance), not its roughness, so rough areas just get darker." tabindex="0" role="img" aria-label="Opt-in, for back-compat. Emits a brightdata pattern from the roughness map, but a Radiance pattern scales the material&#x27;s colour (its diffuse reflectance), not its roughness, so rough areas just get darker."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span>
           </div>
         </div>
       </div>
@@ -208,7 +221,7 @@
             <button type="button" class="link-btn" id="tune-reset" data-tip="Back to the values read from the maps: metalness and roughness from their maps, the primitive&#x27;s default specular, albedo ×1, bump ×1.">Reset to maps</button>
           </div>
           <label class="tune-row">
-            <span>Metalness <span class="tip" data-tip="0 = plastic (dielectric: white highlight over the coloured diffuse). 1 = metal (coloured highlight, no diffuse). The Radiance primitive switches at 0.5." tabindex="0" role="img" aria-label="0 = plastic (dielectric: white highlight over the coloured diffuse). 1 = metal (coloured highlight, no diffuse). The Radiance primitive switches at 0.5."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <span>Metalness <span class="tip" data-tip="0 = plastic (dielectric: white highlight over the coloured diffuse). 1 = metal (coloured highlight, no diffuse). The Radiance primitive switches at 0.5. Usually translates accurately; rarely needs a tweak." tabindex="0" role="img" aria-label="0 = plastic (dielectric: white highlight over the coloured diffuse). 1 = metal (coloured highlight, no diffuse). The Radiance primitive switches at 0.5. Usually translates accurately; rarely needs a tweak."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
             <input type="range" id="tune-metal" min="0" max="1" step="0.01">
             <output id="tune-metal-val"></output>
             <span class="tune-derived" id="tune-metal-derived"></span>
@@ -220,19 +233,19 @@
             <span class="tune-derived" id="tune-spec-derived"></span>
           </label>
           <label class="tune-row">
-            <span>Roughness <span class="tip" data-tip="Perceptual roughness (mean of the roughness map). Radiance α = roughness². 0 = mirror-sharp highlight, 1 = matte." tabindex="0" role="img" aria-label="Perceptual roughness (mean of the roughness map). Radiance α = roughness². 0 = mirror-sharp highlight, 1 = matte."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <span>Roughness <span class="tip tip-hot" data-tip="Perceptual roughness (mean of the roughness map). Radiance α = roughness². 0 = mirror-sharp highlight, 1 = matte. Roughness translates least directly from PBR to Radiance, so trust your eye against the reference." tabindex="0" role="img" aria-label="Perceptual roughness (mean of the roughness map). Radiance α = roughness². 0 = mirror-sharp highlight, 1 = matte. Roughness translates least directly from PBR to Radiance, so trust your eye against the reference."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
             <input type="range" id="tune-rough" min="0" max="1" step="0.005">
             <output id="tune-rough-val"></output>
             <span class="tune-derived" id="tune-rough-derived"></span>
           </label>
           <label class="tune-row">
-            <span>Albedo × <span class="tip" data-tip="Multiplies the colour map (diffuse reflectance). Clamped so the total reflectance never exceeds 100 %." tabindex="0" role="img" aria-label="Multiplies the colour map (diffuse reflectance). Clamped so the total reflectance never exceeds 100 %."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <span>Albedo × <span class="tip" data-tip="Multiplies the colour map (diffuse reflectance). Clamped so the total reflectance never exceeds 100 %. Usually translates accurately; rarely needs a tweak." tabindex="0" role="img" aria-label="Multiplies the colour map (diffuse reflectance). Clamped so the total reflectance never exceeds 100 %. Usually translates accurately; rarely needs a tweak."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
             <input type="range" id="tune-diff" min="0.25" max="2" step="0.01">
             <output id="tune-diff-val"></output>
             <span class="tune-derived" id="tune-diff-derived"></span>
           </label>
           <label class="tune-row">
-            <span>Bump × <span class="tip" data-tip="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map." tabindex="0" role="img" aria-label="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
+            <span>Bump × <span class="tip tip-hot" data-tip="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map. Bump does not translate directly from PBR to Radiance, so trust your eye against the reference." tabindex="0" role="img" aria-label="Strength of the normal-map perturbation (Radiance texdata). 1 = as authored, 0 = flat, above 1 exaggerates. Only applies while &#x27;Use normal map&#x27; is on and the material has a normal map. Bump does not translate directly from PBR to Radiance, so trust your eye against the reference."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></span>
             <input type="range" id="tune-bump" min="0" max="5" step="0.05" value="1">
             <output id="tune-bump-val">1.00</output>
             <span class="tune-derived" id="tune-bump-derived"></span>
@@ -274,6 +287,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=35"></script>
+<script src="/static/app.js?v=37"></script>
 </body>
 </html>
