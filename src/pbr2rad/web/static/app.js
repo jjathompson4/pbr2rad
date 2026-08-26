@@ -23,9 +23,9 @@ async function apiError(resp) {
   if (detail) return detail;
   const retry = resp.headers.get("Retry-After");
   if (resp.status === 429) {
-    return "Rate limited — try again in " + (retry ? "~" + retry + "s" : "a few seconds") + ".";
+    return "Rate limited. Try again in " + (retry ? "~" + retry + "s" : "a few seconds") + ".";
   }
-  if (resp.status === 503) return "Server busy — try again in a few seconds.";
+  if (resp.status === 503) return "Server busy. Try again in a few seconds.";
   return "Request failed (HTTP " + resp.status + ")";
 }
 
@@ -33,7 +33,7 @@ async function apiError(resp) {
 function errMessage(err) {
   if (err && err.name === "TimeoutError") {
     return "Timed out after " + Math.round(CONVERT_TIMEOUT_MS / 60000) +
-      " minutes. The server may be overloaded — please try again.";
+      " minutes. The server may be overloaded. Please try again.";
   }
   return err && err.message ? err.message : String(err);
 }

@@ -550,6 +550,10 @@ select, input, textarea {
 .info-ico { vertical-align: -1px; margin-left: 0.15rem; color: var(--muted-2); }
 .tip { display: inline-flex; align-items: center; cursor: help; outline: none; }
 .tip:hover .info-ico, .tip:focus-visible .info-ico { color: var(--accent); }
+/* The sliders that most often need a manual tweak (roughness, bump) get a
+   subtly tinted ⓘ so the hint is visible before hovering. */
+.tip-hot .info-ico { color: var(--accent); opacity: 0.75; }
+.tip-hot:hover .info-ico, .tip-hot:focus-visible .info-ico { opacity: 1; }
 #tooltip {
   position: fixed;
   z-index: 1000;
