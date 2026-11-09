@@ -37,7 +37,13 @@ from .models import (
     RerenderRequest,
     SourceConvertRequest,
 )
-from .preview import radiance_available, render_preview, rig_for
+from .preview import (
+    PREVIEW_UNAVAILABLE,
+    PreviewResult,
+    radiance_available,
+    render_preview,
+    rig_for,
+)
 
 log = logging.getLogger("pbr2rad.web")
 
@@ -166,7 +172,7 @@ def _zip_directory(directory: Path) -> io.BytesIO:
 def _make_response(
     job_id: str,
     result,
-    has_preview: bool = False,
+    preview: PreviewResult | None = None,
     *,
     source: str | None = None,
     preview_rev: int | None = None,
@@ -175,8 +181,10 @@ def _make_response(
     if source:
         # The material name is the canonical asset id for every source.
         source_url = get_source(source).asset_url(result.name)
+    if preview is None:
+        preview = PreviewResult(PREVIEW_UNAVAILABLE)
     preview_url = None
-    if has_preview:
+    if preview.rendered:
         preview_url = f"/api/v1/preview/{job_id}"
         if preview_rev is not None:
             preview_url += f"?r={preview_rev}"   # re-renders must bust the <img> cache
@@ -194,6 +202,8 @@ def _make_response(
         resolution=[result.width, result.height],
         download_url=f"/api/v1/download/{job_id}",
         preview_url=preview_url,
+        preview_status=preview.status,
+        preview_error=None if preview.rendered else preview.detail,
         channels_used=list(getattr(result, "channels_used", []) or []),
         channels_estimated=list(getattr(result, "channels_estimated", []) or []),
         source=source,
@@ -351,14 +361,16 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
         log.exception("conversion failed for %r", pbr.name)
         raise HTTPException(500, f"Conversion failed: {exc}")
 
-    has_preview = False
+    preview = PreviewResult(PREVIEW_UNAVAILABLE)
     if radiance_available():
         preview_png = output_dir / result.name / "preview.png"
         # The reference-wrap chain convert_set wrote for us (see
         # _opts_from_request); falls back to the exported chain if absent.
         rad_for_preview = getattr(result, "preview_rad_file", None) or result.rad_file
         src_meta = getattr(result, "source", None) or {}
-        has_preview = render_preview(
+        # Never raises; on a timeout or failure no preview.png is left behind
+        # and the response says why (preview_status / preview_error).
+        preview = render_preview(
             result.out_dir, rad_for_preview, preview_png,
             rig=rig_for(result.primitive),    # metals: studio HDRI; others: light rig
             source=src_meta.get("source") if isinstance(src_meta, dict) else None,   # per-source reference exposure
@@ -367,7 +379,7 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
         # convert_set already wrote a .pvw from the albedo swatch; a real
         # render of the material is a better thumbnail, so replace it. The
         # render has a transparent surround — flatten it for ClimateStudio.
-        if has_preview and result.pvw_file is not None:
+        if preview.rendered and result.pvw_file is not None:
             try:
                 write_pvw(
                     result.pvw_file, result.name,
@@ -378,7 +390,7 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
                     "could not refresh %s from render", result.pvw_file.name,
                     exc_info=True,
                 )
-    return result, has_preview
+    return result, preview
 
 
 async def _run_conversion(
@@ -392,10 +404,10 @@ async def _run_conversion(
     if not _CONVERT_LOCK.acquire(blocking=False):
         raise HTTPException(503, _BUSY_DETAIL, headers={"Retry-After": "15"})
     try:
-        result, has_preview = await run_in_threadpool(work)
+        result, preview = await run_in_threadpool(work)
     finally:
         _CONVERT_LOCK.release()
-    return _make_response(job_id, result, has_preview, source=source, preview_rev=preview_rev)
+    return _make_response(job_id, result, preview, source=source, preview_rev=preview_rev)
 
 
 @router.post("/convert/upload", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])

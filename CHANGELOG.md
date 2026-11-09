@@ -323,6 +323,38 @@
 
 ### Fixed
 
+- **Preview spheres vanished after a high-bump re-render** (2026-11-09).
+  Bricks105 at Bump × 3 took 61 s on the production host and came back
+  with `preview_url: null`, so both spheres disappeared with no explanation.
+  The light rig's second ambient bounce was recursing on rays that the
+  strongly tilted normals sent back into the sphere (67 s vs 4 s at
+  768 px locally). It now runs `-ab 1`, like the HDRI rig: byte-identical
+  renders at bump × 1 and × 2 on five materials, 0.1 % mean change at × 3,
+  4–7× faster there. The preview also has an explicit time budget: 40 s for
+  the full render, then a 20 s draft render (folded specular, coarse
+  ambient, no supersampling) instead of no sphere. Responses carry
+  `preview_status` (`ok` / `draft` / `timeout` / `error` / `unavailable`)
+  plus `preview_error`, and a failed render no longer leaves the previous
+  settings' `preview.png` in the job and the zip. In the Output panel, a
+  re-render that made no new picture keeps the previous one, dimmed, under
+  a "Preview out of date" badge with a warning status; drafts get a "Draft
+  render" badge. See `docs/preview-render-budget.md`.
+- **Back-to-back conversions.** Converting while a re-render was running got
+  a 503, and ~45 s later the old re-render's result replaced the new
+  selection in the Output panel. The page now runs one heavy request at a
+  time: Fetch & Convert / Convert are locked (with a status hint) while a
+  re-render or conversion is in flight, stale responses are dropped by
+  request generation, option changes made meanwhile are queued into one
+  follow-up re-render, and a server-busy 503 (another visitor's job) is
+  retried up to three times per its `Retry-After` for both convert and
+  re-render.
+- **Reference sphere from the wrong material.** Selecting another tile while
+  a conversion ran paired the result with the newly selected tile's
+  reference render; the reference is now pinned at click time.
+- **Bump × carried over to the next material.** A fresh conversion sent the
+  previous material's Bump value (Bricks105 converted at × 3 → no preview).
+  New conversions now start at × 1 like Reset to maps, and × 1 is sent while
+  the slider is disabled (normal map off or absent).
 - **"Varying roughness" darkened every textured material.** The `brightdata`
   modifier built from the roughness map was meant to modulate specular, but
   a Radiance pattern scales the material *colour* — the diffuse reflectance

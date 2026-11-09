@@ -22,6 +22,7 @@
   --swatch-border: #ccc;
   --error: #c62828;
   --success: #2e7d32;
+  --warning: #9a5b00;
   --header-bg: #2a2a2a;
   --header-text: #fff;
   --header-muted: #999;
@@ -48,6 +49,7 @@
   --swatch-border: #4a4a4e;
   --error: #ef8080;
   --success: #7ac47e;
+  --warning: #e8b062;
   --header-bg: #202022;
   --header-text: #eee;
   --header-muted: #8d8d8d;
@@ -432,6 +434,7 @@ select, input, textarea {
 .panel-head .status { margin: 0 0 0 auto; text-align: right; }
 .status.error { color: var(--error); }
 .status.success { color: var(--success); }
+.status.warning { color: var(--warning); }
 
 /* Compact two-column summary so it fits in the output card without scrolling. */
 .result-summary {
@@ -512,6 +515,33 @@ select, input, textarea {
 /* Hidden until a result arrives (more specific than .preview-fig img). */
 .preview-fig .preview-img { display: none; }
 .preview-fig .preview-img.visible { display: block; }
+
+/* Over the Radiance sphere: "Preview out of date" when a re-render made no
+   new picture (the previous one stays, dimmed), or "Draft render". */
+#preview-out-fig { position: relative; }
+.preview-badge {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;   /* else shrink-to-fit only gets the half right of left:50% */
+  max-width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 4px;
+  background: rgba(20, 20, 22, 0.78);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  text-align: center;
+}
+.preview-badge[hidden] { display: none; }
+.preview-badge strong { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.66rem; }
+.preview-badge.stale strong { color: #f2c27a; }
+.preview-badge.draft { cursor: help; outline: none; }
+#preview-out-fig.stale .preview-img { opacity: 0.55; filter: saturate(0.6); }
 
 /* Output panel: fixed height, tabs, pinned Download */
 #output-panel { overflow-y: auto; }   /* last-resort scroll only (see .out-panes) */

@@ -10,7 +10,7 @@
       localStorage.getItem("theme") ||
       (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=37">
+  <link rel="stylesheet" href="/static/style.css?v=38">
 </head>
 <body>
 
@@ -153,6 +153,7 @@
       </figure>
       <figure class="preview-fig" id="preview-out-fig">
         <img class="preview-img" id="preview-img" alt="Preview render">
+        <div class="preview-badge" id="preview-badge" role="status" hidden></div>
         <figcaption id="preview-cap" style="display:none">pbr2rad · Radiance <span class="tip" data-tip="Rendered from your bitmaps&#x27; real colour data, unenhanced, so it may not match the source site&#x27;s render exactly." tabindex="0" role="img" aria-label="Rendered from your bitmaps&#x27; real colour data, unenhanced, so it may not match the source site&#x27;s render exactly."><svg class="info-ico" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.2v4"></path><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none"></circle></svg></span></figcaption>
       </figure>
     </div>
@@ -287,6 +288,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=37"></script>
+<script src="/static/app.js?v=38"></script>
 </body>
 </html>

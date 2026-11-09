@@ -16,6 +16,7 @@ import math
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -154,6 +155,48 @@ SPECULAR_SAMPLES = 8            # rpict -ss: lobe samples per ray
 # exactly where sampling is pathological: sample below this roughness, fold
 # above it.
 SPECULAR_SAMPLE_MAX_ROUGHNESS = 0.6
+
+# One ambient bounce for both rigs (the light rig used -ab 2 until 2026-11-09).
+# The scene is one convex sphere under distant sources, so a second bounce can
+# only reach ambient rays that hit the sphere again, and those exist only
+# where a strong normal map tilts the shading normal back into the ball.
+# Measured at 768 px on ambientCG 1k sets: -ab 1 and -ab 2 render byte-identical
+# at bump x1 and x2 (Bricks105, Bricks104, Concrete049, Planks040, Fabric030),
+# so the light-rig calibration is untouched. At bump x3 the second bounce
+# recursed on those self-hits (Bricks105 4 s -> 67 s, Planks040 18 s -> 118 s,
+# past the render budget below on the production host) for a 0.1 % change in
+# mean brightness.
+AMBIENT_BOUNCES = 1
+
+# Time budget for one preview, in rpict wall time. The full-quality render gets
+# PREVIEW_FULL_TIMEOUT_S; if it runs out, a draft render (DRAFT_AMBIENT: folded
+# specular, coarse ambient, no supersampling) gets PREVIEW_DRAFT_TIMEOUT_S so
+# the user still sees the material instead of no sphere. The production host
+# is one shared vCPU, about 3x slower than a laptop; a typical full render
+# takes ~12 s there. ``PreviewResult.status`` says which one shipped and the
+# API passes it on as ``preview_status``. See docs/preview-render-budget.md.
+PREVIEW_FULL_TIMEOUT_S = 40.0
+PREVIEW_DRAFT_TIMEOUT_S = 20.0
+DRAFT_AMBIENT = ("-ab", "1", "-aa", "0.2", "-ad", "256", "-as", "0", "-ss", "1")
+
+PREVIEW_OK = "ok"                    # full-quality render
+PREVIEW_DRAFT = "draft"              # full render ran out of time; draft shipped
+PREVIEW_TIMEOUT = "timeout"          # draft ran out of time too: no preview
+PREVIEW_ERROR = "error"              # a Radiance tool failed: no preview
+PREVIEW_UNAVAILABLE = "unavailable"  # Radiance not installed
+
+
+@dataclass(frozen=True)
+class PreviewResult:
+    """What ``render_preview`` produced: a status and, when no picture was
+    made, a short reason that is safe to show the user."""
+    status: str
+    detail: str | None = None
+
+    @property
+    def rendered(self) -> bool:
+        """True when ``output_png`` holds a fresh render (full or draft)."""
+        return self.status in (PREVIEW_OK, PREVIEW_DRAFT)
 
 
 def samples_specular(rig: str, roughness: float | None) -> bool:
@@ -520,18 +563,25 @@ def render_preview(
     rig: str = RIG_LIGHTS,
     source: str | None = None,
     roughness: float | None = None,
-) -> bool:
+    full_timeout: float = PREVIEW_FULL_TIMEOUT_S,
+    draft_timeout: float = PREVIEW_DRAFT_TIMEOUT_S,
+) -> PreviewResult:
     """Render a preview sphere with the given material.
 
     ``roughness`` (the material's mean perceptual roughness) decides whether
     the lights rig samples the specular lobe or folds it — see
-    ``SPECULAR_SAMPLE_MAX_ROUGHNESS``. Returns True on success, False on failure.
+    ``SPECULAR_SAMPLE_MAX_ROUGHNESS``. A full render that runs past
+    ``full_timeout`` is replaced by a draft render (see the time budget
+    above). ``output_png`` is removed first, so it exists afterwards only if
+    the result is ``rendered``: a failed re-render must not leave the previous
+    settings' picture behind as this job's preview and zip thumbnail.
     """
     if not radiance_available():
-        return False
+        return PreviewResult(PREVIEW_UNAVAILABLE, "Radiance is not installed on this server.")
 
     work = output_png.parent
     name = rad_file.stem
+    output_png.unlink(missing_ok=True)
 
     # Scene: a unit sphere with the material under test, lit by key + fill
     # discs, a sky dome and a dim lower-hemisphere environment. The web app
@@ -548,11 +598,12 @@ def render_preview(
     # sampled — sampling speckles; folded renders are deterministic and stay 1×.
     sample_spec = samples_specular(rig, roughness)
     ss = SUPERSAMPLE if sample_spec else 1
+    ab = str(AMBIENT_BOUNCES)
     ambient = (
-        ["-ab", "1", "-aa", "0.12", "-ad", "1024", "-as", "512",
+        ["-ab", ab, "-aa", "0.12", "-ad", "1024", "-as", "512",
          "-st", f"{SPECULAR_THRESHOLD:g}", "-ss", f"{SPECULAR_SAMPLES:g}"]
         if rig == RIG_HDRI else
-        ["-ab", "2", "-aa", "0.1", "-ad", "1024", "-as", "512",
+        ["-ab", ab, "-aa", "0.1", "-ad", "1024", "-as", "512",
          # -dt/-dc stay at rpict's defaults: forcing -dt 0 made every ambient
          # self-hit test all the rim sources (Fabric030: 11 s vs 1.5 s).
          *(["-st", f"{SPECULAR_THRESHOLD:g}", "-ss", f"{SPECULAR_SAMPLES:g}"]
@@ -578,38 +629,47 @@ def render_preview(
                 check=True, timeout=30, env=env,
             )
 
-        # Render
-        with open(hdr, "wb") as f:
-            subprocess.run(
-                [
-                    "rpict",
-                    # Straight-on view aimed at the origin; distance and FOV
-                    # put the unit sphere at ~95 % of the frame width.
-                    "-vp", *(f"{c:g}" for c in _CAM_VP),
-                    "-vd", *(f"{c:g}" for c in _CAM_VD),
-                    "-vu", *(f"{c:g}" for c in _CAM_VU),
-                    "-vh", f"{_CAM_FOV_DEG:g}", "-vv", f"{_CAM_FOV_DEG:g}",
-                    # Rendered at 2x and reduced by pfilt (Gaussian): averages
-                    # the glossy-sampling speckle of the HDRI softboxes.
-                    "-x", str(size * ss), "-y", str(size * ss),
-                    # Light rig: -ab 2 over a dim glow surround (direct
-                    # highlights from the light discs). HDRI rig: all light is
-                    # the glow environment seen through the ambient pass, the
-                    # specular lobe is sampled against it (-st/-ss; Radiance's
-                    # default -st 0.15 would fold plastics' 5 % into diffuse),
-                    # and it renders at 2x for a Gaussian pfilt reduce.
-                    *ambient,
-                    # Adaptive pixel sampling: sample every 2nd pixel and
-                    # refine where neighbours disagree (-pt 0.05 default).
-                    # Visually identical to -ps 1 here (textures force
-                    # refinement) but the 68-source direct loop then runs on
-                    # far fewer points: Fabric030 11.3 s → 1.7 s.
-                    "-ps", "2",
-                    str(octree),
-                ],
-                stdout=f, stderr=subprocess.PIPE,
-                check=True, timeout=60, env=env,
+        def rpict(px: int, ambient_args, timeout: float) -> None:
+            with open(hdr, "wb") as f:
+                subprocess.run(
+                    [
+                        "rpict",
+                        # Straight-on view aimed at the origin; distance and
+                        # FOV put the unit sphere at ~95 % of the frame width.
+                        "-vp", *(f"{c:g}" for c in _CAM_VP),
+                        "-vd", *(f"{c:g}" for c in _CAM_VD),
+                        "-vu", *(f"{c:g}" for c in _CAM_VU),
+                        "-vh", f"{_CAM_FOV_DEG:g}", "-vv", f"{_CAM_FOV_DEG:g}",
+                        "-x", str(px), "-y", str(px),
+                        *ambient_args,
+                        # Adaptive pixel sampling: sample every 2nd pixel and
+                        # refine where neighbours disagree (-pt 0.05 default).
+                        # Visually identical to -ps 1 here (textures force
+                        # refinement) but the 68-source direct loop then runs
+                        # on far fewer points: Fabric030 11.3 s → 1.7 s.
+                        "-ps", "2",
+                        str(octree),
+                    ],
+                    stdout=f, stderr=subprocess.PIPE,
+                    check=True, timeout=timeout, env=env,
+                )
+
+        # Render. Light rig: one ambient bounce over a dim glow surround
+        # (direct highlights from the light discs). HDRI rig: all light is the
+        # glow environment seen through the ambient pass, the specular lobe is
+        # sampled against it (-st/-ss; Radiance's default -st 0.15 would fold
+        # plastics' 5 % into diffuse). Sampled renders run at 2x for a
+        # Gaussian pfilt reduce that averages the glossy-sampling speckle.
+        draft = False
+        try:
+            rpict(size * ss, ambient, full_timeout)
+        except subprocess.TimeoutExpired:
+            log.warning(
+                "preview render ran past %gs for %s; rendering a draft",
+                full_timeout, rad_file.name,
             )
+            draft, ss = True, 1
+            rpict(size, DRAFT_AMBIENT, draft_timeout)
 
         # Exposure: fixed (derived from the rig, comparable across materials)
         # unless auto mode is requested; auto measures the sphere's own pixels.
@@ -645,18 +705,18 @@ def render_preview(
                 rgba.putalpha(Image.fromarray(sphere_alpha(size), mode="L"))
             rgba = apply_look(rgba)
             rgba.save(output_png)
-        return True
+        return PreviewResult(PREVIEW_DRAFT if draft else PREVIEW_OK)
 
     except subprocess.TimeoutExpired as exc:
         log.warning("preview render timed out (%s) for %s", exc.cmd[0], rad_file.name)
-        return False
+        return PreviewResult(PREVIEW_TIMEOUT, "The preview render ran out of time.")
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"").decode(errors="replace").strip()
         log.warning(
             "preview render failed (%s, exit %d) for %s: %s",
             exc.cmd[0], exc.returncode, rad_file.name, stderr[-500:],
         )
-        return False
+        return PreviewResult(PREVIEW_ERROR, f"The preview render failed ({exc.cmd[0]}).")
     except Exception:
         log.exception("preview render failed for %s", rad_file.name)
-        return False
+        return PreviewResult(PREVIEW_ERROR, "The preview render failed.")
