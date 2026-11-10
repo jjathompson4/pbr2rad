@@ -348,6 +348,12 @@
   follow-up re-render, and a server-busy 503 (another visitor's job) is
   retried up to three times per its `Retry-After` for both convert and
   re-render.
+- **Production previews timed out under CPU throttling.** The Fly
+  `shared-cpu-1x` machine runs at full speed only while it has burst balance
+  (5 s after each start; it scales to zero, so every wake is a start) and is
+  otherwise held to 6.25 % of a core: re-renders took 75–82 s and both
+  preview renders ran out of time. Production now runs on a dedicated
+  `performance-1x` (2 GB), billed per second while running.
 - **Stale cached page after a deploy.** `index.html` was served without
   `Cache-Control`, so browsers cached it heuristically for days, while
   `/static/app.js?v=…` (the server ignores the query) already returned the

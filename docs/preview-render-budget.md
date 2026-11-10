@@ -35,8 +35,10 @@ Measured on prod right after the v=38 deploy, Bricks105 1k:
 
 Locally the same full render takes ~4 s. So at full speed the budget is
 generous, and once throttled neither render fits it. That is a hosting
-limit, not a render setting: a dedicated-CPU machine (`performance-1x`) is
-not throttled, and shared machines with more vCPUs have a higher baseline.
+limit, not a render setting, so on 2026-11-10 production moved to a
+dedicated-CPU `performance-1x` (2 GB), which is never throttled (Jeff's
+call; see `fly.toml`). It is billed per second while running, and
+scale-to-zero stays on, so idle time still costs ~$0.
 
 The draft render (`DRAFT_AMBIENT`) uses one bounce, `-ad 256 -as 0 -aa 0.2`,
 folded specular (rpict's default `-st`), and no 2× supersampling. It is 6–8×

@@ -34,8 +34,14 @@ swap_size_mb = 512
     path = "/api/v1/health"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"   # headroom for Pillow on 2048px maps + Radiance previews
+  # Dedicated CPU (2026-11-10, Jeff). A shared-cpu-1x runs at full speed only
+  # while it has burst balance (5 s after each start, and scale-to-zero means
+  # every wake is a start), then is held to a 6.25 % baseline: previews took
+  # 75-82 s and missed the render budget. performance-1x is never throttled.
+  # Billed per second while running; auto-stop above keeps idle cost ~$0
+  # ($33/mo only if it ran around the clock).
+  size = "performance-1x"
+  memory = "2gb"   # performance-1x minimum; was 1gb (Pillow on 2048px maps + previews)
   # Keep the rootfs (and with it the download cache + catalogs) across
   # auto-stop/start AND deploys. Without this every idle->stop->start wipes
   # the cache, so catalogs are rebuilt upstream on every wake and every pack
