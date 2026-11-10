@@ -246,6 +246,116 @@ def generate(
     raise ValueError(f"unknown projection mode: {mode!r}")
 
 
+# ---------------------------------------------------------------------------
+# Tangent frame (for normal maps)
+# ---------------------------------------------------------------------------
+#
+# A tangent-space normal map says how far the surface normal leans along the
+# texture's own axes: red along +u, green along +v, blue along the normal.
+# Radiance's texdata/texfunc add their perturbation vector to the normal in
+# WORLD axes (there is no transform on the modifier), so the normal .cal has
+# to turn the map's (x, y, z) into world directions itself. Until 2026-11-10
+# it added the map's x/y/z straight onto world X/Y/Z, which is right only on
+# surfaces facing +Z: on a wall the map's green channel pushed along the
+# wall's own normal (invisible) and its blue channel tilted every bump down.
+#
+# ``tangent_frame`` emits, for a projection, the unit vectors on the surface
+# along which u grows (``nm_tx/ty/tz``) and v grows (``nm_bx/by/bz``):
+#   B = v's gradient, projected into the surface plane;
+#   T = u's gradient in the plane, made perpendicular to B (the bitangent
+#       convention of MikkTSpace, which most normal maps are baked against).
+# Where u or v does not change across a surface (a planar projection seen
+# edge-on, a cylinder's caps) the missing axis is completed from the other
+# and the normal, so the frame is always defined. The raw gradient
+# directions per mode come from the u/v formulas above; a negative scale
+# flips its axis. ``uv`` (mesh Lu/Lv) carries no direction information in
+# Radiance, so it falls back to the box projection's frame: correct for
+# meshes whose UVs run the way a box projection would lay them out.
+
+def _frame_axes(mode: str, axis: PlanarAxis, swap_uv: bool) -> tuple[str, tuple[str, str, str], tuple[str, str, str]]:
+    """Setup lines plus the raw (unnormalised) world gradients of u and v."""
+    if mode == "planar":
+        t, b = {"xy": ("100", "010"), "xz": ("100", "001"), "yz": ("010", "001")}[axis]
+        vec = lambda s: tuple(s)  # noqa: E731
+        return "", vec(t), vec(b)
+    if mode in ("box", "uv"):
+        setup = (
+            "nm_ax = abs(Nx);\n"
+            "nm_ay = abs(Ny);\n"
+            "nm_az = abs(Nz);\n"
+            "nm_xdom = if(nm_ax - nm_ay, if(nm_ax - nm_az, 1, 0), 0);\n"
+            "nm_zdom = if(nm_az - nm_ax, if(nm_az - nm_ay, 1, 0), 0);\n"
+            "{ X dominant: u=Py v=Pz; Z dominant: u=Px v=Py; Y dominant: u=Px v=Pz }\n"
+        )
+        t = ("if(nm_xdom - 0.5, 0, 1)", "if(nm_xdom - 0.5, 1, 0)", "0")
+        b = ("0", "if(nm_zdom - 0.5, 1, 0)", "if(nm_zdom - 0.5, 0, 1)")
+        return setup, t, b
+    east = ("-Py", "Px", "0")                             # longitude / angle around Z grows
+    if mode == "cylindrical":
+        return "", east, ("0", "0", "1")
+    if mode == "spherical":
+        north = ("-Px*Pz", "-Py*Pz", "Px*Px + Py*Py")    # latitude grows
+        return ("", north, east) if swap_uv else ("", east, north)
+    raise ValueError(f"unknown projection mode: {mode!r}")
+
+
+def tangent_frame(
+    mode: str,
+    *,
+    axis: PlanarAxis = "xy",
+    u_scale: float = 1.0,
+    v_scale: float = 1.0,
+    swap_uv: bool = False,
+) -> str:
+    """``.cal`` lines defining the unit tangent ``nm_tx/ty/tz`` (u grows) and
+    bitangent ``nm_bx/by/bz`` (v grows) on the surface at the hit point, for
+    the projection ``mode`` (see the notes above)."""
+    setup, t, b = _frame_axes(mode, axis, swap_uv)
+    su = -1 if (u_scale < 0 and mode != "uv") else 1
+    sv = -1 if (v_scale < 0 and mode != "uv") else 1
+
+    def signed(expr: str, s: int) -> str:
+        if expr in ("0", "1"):
+            return "0" if expr == "0" else str(s)
+        return expr if s == 1 else f"-({expr})"
+
+    t = tuple(signed(c, su) for c in t)
+    b = tuple(signed(c, sv) for c in b)
+    mode_note = "box projection's frame (mesh UVs carry no direction)" if mode == "uv" else f"{mode}"
+    return (
+        f"{{ Tangent frame for the normal map ({mode_note}): }}\n"
+        "{ nm_t* = direction on the surface in which u grows, nm_b* = v grows }\n"
+        + setup
+        + f"nm_rtx = {t[0]};\nnm_rty = {t[1]};\nnm_rtz = {t[2]};\n"
+        + f"nm_rbx = {b[0]};\nnm_rby = {b[1]};\nnm_rbz = {b[2]};\n"
+        "{ both into the surface plane }\n"
+        "nm_tn = nm_rtx*Nx + nm_rty*Ny + nm_rtz*Nz;\n"
+        "nm_t1x = nm_rtx - nm_tn*Nx;\n"
+        "nm_t1y = nm_rty - nm_tn*Ny;\n"
+        "nm_t1z = nm_rtz - nm_tn*Nz;\n"
+        "nm_tl = sqrt(nm_t1x*nm_t1x + nm_t1y*nm_t1y + nm_t1z*nm_t1z);\n"
+        "nm_bn = nm_rbx*Nx + nm_rby*Ny + nm_rbz*Nz;\n"
+        "nm_b1x = nm_rbx - nm_bn*Nx;\n"
+        "nm_b1y = nm_rby - nm_bn*Ny;\n"
+        "nm_b1z = nm_rbz - nm_bn*Nz;\n"
+        "nm_bl = sqrt(nm_b1x*nm_b1x + nm_b1y*nm_b1y + nm_b1z*nm_b1z);\n"
+        "{ B: v's direction; where v does not change across the surface, N x T }\n"
+        "nm_tlg = if(nm_tl - 1e-9, nm_tl, 1e-9);\n"
+        "nm_bx = if(nm_bl - 1e-6, nm_b1x/nm_bl, (Ny*nm_t1z - Nz*nm_t1y)/nm_tlg);\n"
+        "nm_by = if(nm_bl - 1e-6, nm_b1y/nm_bl, (Nz*nm_t1x - Nx*nm_t1z)/nm_tlg);\n"
+        "nm_bz = if(nm_bl - 1e-6, nm_b1z/nm_bl, (Nx*nm_t1y - Ny*nm_t1x)/nm_tlg);\n"
+        "{ T: u's direction made perpendicular to B; where u does not change, B x N }\n"
+        "nm_tb = nm_t1x*nm_bx + nm_t1y*nm_by + nm_t1z*nm_bz;\n"
+        "nm_t2x = nm_t1x - nm_tb*nm_bx;\n"
+        "nm_t2y = nm_t1y - nm_tb*nm_by;\n"
+        "nm_t2z = nm_t1z - nm_tb*nm_bz;\n"
+        "nm_t2l = sqrt(nm_t2x*nm_t2x + nm_t2y*nm_t2y + nm_t2z*nm_t2z);\n"
+        "nm_tx = if(nm_t2l - 1e-6, nm_t2x/nm_t2l, nm_by*Nz - nm_bz*Ny);\n"
+        "nm_ty = if(nm_t2l - 1e-6, nm_t2y/nm_t2l, nm_bz*Nx - nm_bx*Nz);\n"
+        "nm_tz = if(nm_t2l - 1e-6, nm_t2z/nm_t2l, nm_bx*Ny - nm_by*Nx);\n"
+    )
+
+
 def picture_scales(width: int, height: int) -> tuple[float, float]:
     """Aspect factors for ``pic_u``/``pic_v`` from the albedo's pixel size."""
     if width <= 0 or height <= 0:

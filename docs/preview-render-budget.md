@@ -70,11 +70,19 @@ look, not as the picture you judge.
 - **Budget:** the draft gets the 20 s draft budget. The refine gets 60 s
   (`REFINE_TIMEOUT_S`, the old single cap) and no draft fallback. If it
   times out, fails or is cancelled, the draft stays as the job's preview
-  (`keep_on_failure`) and the page labels it "Draft render".
+  (`keep_on_failure`) and the page labels it "Draft render" (plus "Full
+  render timed out" / "Full render failed" when that is why).
+- **The refine runs in the background** (since Bug 6, below): `POST
+  /jobs/{id}/refine` answers `202` with `preview_status: "running"` and a
+  `refine_id`; the page long-polls `GET /jobs/{id}/refine?refine_id=…&wait=10`,
+  which answers as soon as the render settles or after 10 s. No request
+  stays open for the render.
 - **Atomic picture:** `preview.png` is written to a temp file and moved into
   place, so a killed render never leaves half a PNG.
 - **Rate limits:** refines have their own 20/min bucket
-  (`rate_limit_refine`), so a visitor still gets 20 changes a minute.
+  (`rate_limit_refine`), so a visitor still gets 20 changes a minute. Polls
+  have another (`rate_limit_poll`, 120/min); a refine at the 60 s cap costs
+  about 7.
 - Clients that don't send `preview_quality` (older cached pages) get the
   full render as before.
 
@@ -107,10 +115,78 @@ like the HDRI rig, and the calibration gain is unchanged. Raising `-lr` made
 no difference, and Radiance printed no warnings.
 
 At × 5 a few rough, strongly normal-mapped materials (Bricks105, Fabric030)
-can still run past 40 s on a loaded machine. That is what the draft fallback
-is for. The Bump slider still goes to 5. Capping it lower (bump > ~3 tilts
+could still run past 40 s on a loaded machine. That is what the draft fallback
+is for. Since the black core (below) high bump costs little more than × 1. The Bump slider still goes to 5. Capping it lower (bump > ~3 tilts
 normals past what a real surface does) is a product call that hasn't been
 made.
+
+## Bug 6: refines cut off at 30 s, and the black core (2026-11-10)
+
+Reported from a headless browser on v=41: Red Brick 03 (Poly Haven, 1k),
+bump × 2, the refine came back as a non-JSON **502 after ~30 s** and the page
+stayed on the draft.
+
+**The 502 was not ours.** The prod log shows that refine finishing with a
+200 after 32 s. The same sequence by `curl` through Cloudflare and Fly got
+the full picture after 31.7 s. Nothing in our chain cuts at 30 s: uvicorn
+runs with no worker timeout, Fly's proxy has none at that length, and
+Cloudflare's origin timeout is 100 s (it answers 524, not 502). The cutoff
+was on the tester's network, a proxy with a ~30 s limit. Visitors behind
+such proxies (corporate networks) would hit it too, which is why the refine
+now runs in the background (above) instead of in one long request.
+
+**The refine was also far too slow at high bump.** Red Brick 03 1k, refine
+time (full render, 768 px, sampled specular at roughness 0.53):
+
+| | bump × 1 | × 2 | × 3 | × 5 |
+|---|---|---|---|---|
+| Local (Apple Silicon), before | 4.0 s | 9.8 s | 20 s | 34 s |
+| Production (performance-1x), before | – | 31.7 s | > 60 s: timeout | > 60 s: timeout |
+| Local, with the black core | 4.5 s | 4.2 s | 4.7 s | 4.9 s |
+
+Production runs these about 3.2× slower than local, so with the core expect
+~15 s at any bump.
+
+Where the time went, bump × 5 locally: full render 34.6 s; the same with
+specular folded instead of sampled 7.6 s; sampled specular with no ambient
+pass 2.9 s. So the cost was specular rays × ambient calculations. At high
+bump the shading normal tips far enough that sampled reflections leave
+*below* the surface and hit the inside of the sphere. Nothing lights the
+inside, so those rays always come back black, but each one still ran a full
+ambient calculation (`-ad 1024 -as 512`) at its hit point.
+
+The fix is a zero-radiance `glow` sphere at radius 0.999 inside the ball
+(`preview.BLACK_CORE`). Such rays end on it with no shading work, and the
+picture is the same, because the inside was black anyway. Full renders,
+with core against without, ambientCG/Poly Haven 1k at bump × 1 and × 3:
+
+| Material | Time × 1 | Time × 3 | Mean RGB change |
+|---|---|---|---|
+| Red Brick 03 | 4.6 → 4.5 s | 20.6 → 4.7 s | ≤ 0.07 % |
+| Fabric030 | 2.2 → 2.2 s | 5.8 → 2.4 s | ≤ 0.11 % |
+| Planks040 | 2.0 → 2.1 s | 3.6 → 2.2 s | ≤ 0.15 % |
+| Bricks105, Wood028, Concrete049 | unchanged | unchanged | ≤ 0.11 % |
+| Metal032 (HDRI rig) | unchanged | unchanged | byte-identical |
+
+The per-pixel differences are the ambient sampling's own noise moving (any
+change to the scene reshuffles its random samples). Side by side the pictures
+are indistinguishable. The exported material is untouched: the core exists
+only in `preview.scene.rad`.
+
+**Black specks on the draft.** At high bump the draft shows black specks and
+dashes along the edges of mortar joints where the view grazes the ball (near
+the top of the ball on v=41; around the whole rim since the normal-map
+orientation fix, see `docs/using-pbr2rad-with-climatestudio.md`). They are
+pixels whose perturbed normal faces away from the camera: Radiance flips
+such a normal and the pixel shades black. Every draft setting tried
+(`-ps 1`, `-ab 0`, `-aa 0`, `-as 64`, sampled specular) still shows them,
+so they are not a sampling artifact. The full render has the same pixels at
+768 px, but its 2× Gaussian reduce turns them into a soft dark edge. At
+bump × 2 and × 5 the full render shows no specks. They are expected on the
+draft and gone once the refine lands (a few seconds now). A real fix would
+curb the perturbation at grazing incidence, which Radiance's own source
+suggests (`raynormal()`: keep `DOT(rdir, pert) < Rdot`). That would change
+the exported `.cal`, so it is left for a deliberate change.
 
 ## Client side
 

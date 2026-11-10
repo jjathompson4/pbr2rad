@@ -71,4 +71,8 @@ rate_limit = _make_limiter(20)         # conversions / uploads
 # Preview refines follow every progressive convert / re-render one-for-one;
 # their own bucket keeps the 20 changes a minute the sliders had before.
 rate_limit_refine = _make_limiter(20)
+# Polls of a running refine (GET /jobs/{id}/refine long-polls ~10 s each, so
+# a refine at the 60 s cap costs about 7); separate so they never eat into
+# browsing.
+rate_limit_poll = _make_limiter(120)
 rate_limit_light = _make_limiter(60)   # search / info / download / preview

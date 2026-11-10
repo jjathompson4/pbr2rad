@@ -583,10 +583,37 @@ def _scene_text_lights(name: str) -> str:
     )
 
 
+# A black core just inside the ball (2026-11-10). A strong normal map tilts
+# the shading normal far enough that reflected rays leave below the surface
+# and hit the inside of the sphere. Nothing lights the inside, so those rays
+# always come back black, but each one still ran a full ambient calculation
+# (1024 rays) at its hit point. That was most of the render time at high
+# bump: Red Brick 03 at bump x5 took 34.6 s locally (past the 60 s refine cap
+# on the production host), and 4.9 s with the core, with the same picture
+# (mean within 0.1 %). A zero glow ends such a ray at once, with no shading
+# work. It sits at 0.999 so it never shows through the ball's own surface.
+BLACK_CORE = True
+_CORE_RADIUS = 0.999
+
+
+def _core_text() -> str:
+    if not BLACK_CORE:
+        return ""
+    return (
+        "\nvoid glow pbr2rad_core_black\n0\n0\n4 0 0 0 0\n\n"
+        f"pbr2rad_core_black sphere ball_core\n0\n0\n4 0 0 0 {_CORE_RADIUS * _SPHERE_RADIUS:g}\n"
+    )
+
+
 def _scene_text(name: str, rig: str = RIG_HDRI) -> str:
     """The preview scene for ``rig``: the light rig, or the unit sphere inside
     the studio HDRI (the picture as a colorpict pattern on a glow, on two
-    distant hemispherical sources)."""
+    distant hemispherical sources). Both put a black core inside the ball
+    (see ``BLACK_CORE``)."""
+    return _scene_text_rig(name, rig) + _core_text()
+
+
+def _scene_text_rig(name: str, rig: str) -> str:
     if rig == RIG_LIGHTS:
         return _scene_text_lights(name)
     wb = ENV_WHITE_BALANCE

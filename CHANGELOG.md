@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Normal maps now lean along each surface, not along world axes.** The
+  `_normal.cal` added the map's x/y/z straight onto world X/Y/Z, which is
+  right only on upward-facing surfaces: on walls the bumps' vertical relief
+  was lost and every bump tilted down (box projection: walls 24–29° off,
+  slanted faces up to 40°, cylinder/sphere projections 25–55°, negative
+  scales wrong even on floors). The perturbation is now built in the
+  surface's tangent frame for the chain's projection (`cal.tangent_frame`):
+  a wall renders exactly like the floor turned upright, floors are
+  unchanged. `uv` mode uses the box projection's frame (Radiance exposes no
+  mesh tangents). Rotating or flipping a normal map also turns its vectors
+  now (`normal.orientation_remap`). Exported `_normal.cal` files change, so
+  the golden hashes for those four files were regenerated; every other
+  output file is byte-identical. The web preview sphere gets the same fix
+  (mean colour within 0.5 %). Not yet re-tested in ClimateStudio.
+- **Full-quality preview cut off after a bump change (Bug 6).** The refine
+  now runs in the background: `POST /api/v1/jobs/{id}/refine` answers `202`
+  (`preview_status: "running"`, `refine_id`) and the page long-polls `GET
+  /api/v1/jobs/{id}/refine?wait=10`, so no request stays open for the render.
+  A single ~30 s request was being cut off with a 502 by a proxy on the
+  visitor's network, so the full picture never arrived.
+- **High bump renders 4–7× faster.** A black core inside the preview ball ends
+  the reflected rays a strong normal map tips into the sphere, which each ran
+  a full ambient calculation for a guaranteed-black answer. Red Brick 03 at
+  bump × 5: 34.6 s → 4.9 s locally; on production bump × 3 and × 5 used to
+  time out at 60 s. Pictures unchanged (mean within 0.15 %).
+- **"Full render timed out" / "Full render failed"** now shows in the status
+  line and on the Draft render badge when that is why the draft stayed.
+- **Only the normal map that is used is badged USED (Bug 5).** Sets with both
+  OpenGL and DirectX normal maps (Poly Haven) marked both as used; the
+  conversion reads one (OpenGL first), and the other now shows IGNORED.
+  Assets v=42.
+
 ### Added
 
 - **Progressive previews.** Converts and re-renders return a quick draft

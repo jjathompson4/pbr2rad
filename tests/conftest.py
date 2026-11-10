@@ -29,6 +29,6 @@ def _reset_rate_limits():
     except ImportError:          # web extras not installed
         yield
         return
-    for limiter in (limits.rate_limit, limits.rate_limit_light, limits.rate_limit_refine):
+    for limiter in (limits.rate_limit, limits.rate_limit_light, limits.rate_limit_refine, limits.rate_limit_poll):
         limiter.reset()
     yield
