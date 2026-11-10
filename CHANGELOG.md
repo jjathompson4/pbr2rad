@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **Normal maps now lean along each surface, not along world axes.** The
+  `_normal.cal` added the map's x/y/z straight onto world X/Y/Z, which is
+  right only on upward-facing surfaces: on walls the bumps' vertical relief
+  was lost and every bump tilted down (box projection: walls 24–29° off,
+  slanted faces up to 40°, cylinder/sphere projections 25–55°, negative
+  scales wrong even on floors). The perturbation is now built in the
+  surface's tangent frame for the chain's projection (`cal.tangent_frame`):
+  a wall renders exactly like the floor turned upright, floors are
+  unchanged. `uv` mode uses the box projection's frame (Radiance exposes no
+  mesh tangents). Rotating or flipping a normal map also turns its vectors
+  now (`normal.orientation_remap`). Exported `_normal.cal` files change, so
+  the golden hashes for those four files were regenerated; every other
+  output file is byte-identical. The web preview sphere gets the same fix
+  (mean colour within 0.5 %). Not yet re-tested in ClimateStudio.
 - **Full-quality preview cut off after a bump change (Bug 6).** The refine
   now runs in the background: `POST /api/v1/jobs/{id}/refine` answers `202`
   (`preview_status: "running"`, `refine_id`) and the page long-polls `GET

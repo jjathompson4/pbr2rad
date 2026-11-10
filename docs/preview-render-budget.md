@@ -174,8 +174,10 @@ are indistinguishable. The exported material is untouched: the core exists
 only in `preview.scene.rad`.
 
 **Black specks on the draft.** At high bump the draft shows black specks and
-dashes along the upper edges of mortar joints near the top of the ball. They
-are pixels whose perturbed normal faces away from the camera: Radiance flips
+dashes along the edges of mortar joints where the view grazes the ball (near
+the top of the ball on v=41; around the whole rim since the normal-map
+orientation fix, see `docs/using-pbr2rad-with-climatestudio.md`). They are
+pixels whose perturbed normal faces away from the camera: Radiance flips
 such a normal and the pixel shades black. Every draft setting tried
 (`-ps 1`, `-ab 0`, `-aa 0`, `-as 64`, sampled specular) still shows them,
 so they are not a sampling artifact. The full render has the same pixels at

@@ -211,6 +211,36 @@ for a feet-based model and then someone imports it into a meters-based
 project, tiles will be 0.3 m instead of 1 ft. Either standardize on one
 unit when authoring, or regenerate the material for each unit system.
 
+### Normal maps follow each surface (since 2026-11-10)
+
+A normal map stores how far the surface leans along the texture's own axes
+(red along u, green along v, blue along the normal). Radiance's `texdata`
+adds its perturbation to the normal in world X/Y/Z, so the `_normal.cal`
+has to turn the map's vectors into world directions itself. Before
+2026-11-10 it did not: the map's x/y/z went straight onto world X/Y/Z,
+which is right only on surfaces facing up. On a wall the green channel
+pushed along the wall's own normal (no visible effect) and the blue channel
+tilted every bump downward. Measured with a constant texel, box projection:
+walls were 24–29° off, ceilings 6°, slanted faces up to 40°, DirectX maps on
+walls up to 50°, cylinder and sphere projections 25–55°, and a negative
+u/v-scale was wrong even on floors.
+
+Now `cal.tangent_frame()` writes, for the chain's projection, the surface
+directions in which u and v grow (T and B), and the perturbation is
+`A1 * (x*T + y*B + (z - 1)*N)`. A wall renders exactly like the floor turned
+upright (pixel difference 0.0 %; it was 20–23 % for Poly Haven Red Brick 03).
+Floors render the same as before. Rotating or flipping a normal map (the
+per-map rotation, Flip H/V) now also turns its vectors, so the bumps stay
+lit from the right side.
+
+- **`uv` mode** (mesh `Lu`/`Lv`): Radiance gives a `.cal` no way to know
+  which way a mesh's u runs, so it uses the box projection's frame. That is
+  right for meshes whose UVs run the way a box projection lays them out, and
+  only approximate otherwise.
+- **Re-test in CS.** The new `.cal` uses only `if`, `abs`, `sqrt` and
+  arithmetic (the box projection already used the first two), but it has not
+  been rendered in ClimateStudio yet.
+
 ### Roughness / metalness are baked
 
 pbr2rad picks `plastic` vs `metal` based on the source PBR set's

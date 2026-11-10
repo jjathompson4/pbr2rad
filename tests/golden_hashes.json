@@ -6,7 +6,7 @@
     "albedo_only_estimated/albedo_only_estimated_nor_b.dat": "57d17f3c7225695911efb36e5b3223cd0980ad45f6a9b608aeb414d766259caa",
     "albedo_only_estimated/albedo_only_estimated_nor_g.dat": "e3a5358a0daed9963010f031d4a6493d16c4900209d63c27bc397453d6fc9aeb",
     "albedo_only_estimated/albedo_only_estimated_nor_r.dat": "7b6b7614f8a573a7ec0c17ecc803ce49a6b18899fb1370fb9dfa801ff293f67f",
-    "albedo_only_estimated/albedo_only_estimated_normal.cal": "ceb2758ecf6ee1d546a40b51c3c3807e44d7b20fd3de5ff72c902e6f6073899e",
+    "albedo_only_estimated/albedo_only_estimated_normal.cal": "2bc6f29822c686036f2cd8a09a22120fc929150ed3877600f74e69a3f2c39697",
     "manifest.json": "0d8a7b8593ac49d5c55ff9107778e7ea3b10d3407ac216e5cbab85105cf26a61"
   },
   "full_set": {
@@ -16,7 +16,7 @@
     "full_set/full_set_nor_b.dat": "d09e388da59e424f7c5befe53eae8b6d74eca19335fdf41cab6eb64e858f9fc0",
     "full_set/full_set_nor_g.dat": "25cda3d583e50505d7b575e30685383f7ad75ddb24c60b1059b954b37e538e6c",
     "full_set/full_set_nor_r.dat": "af349ef2b194cd8d41ec54a2f19361e40a971474f6331a32ccb8fb38354c9a0b",
-    "full_set/full_set_normal.cal": "b2fb916d9e29dac4f2537cecac406cd903b2d43a0daa9629b8615a351211812c",
+    "full_set/full_set_normal.cal": "77a19f1d9d90eaf77951c400a0b186bb12beab3c6ac0abda0cff255e0b216546",
     "manifest.json": "5495705d784d7e2ce8435d5c126e8d48c8fc5565fd72f009246a0703ec949517"
   },
   "oriented": {
@@ -27,7 +27,7 @@
     "oriented/oriented_nor_b.dat": "d09e388da59e424f7c5befe53eae8b6d74eca19335fdf41cab6eb64e858f9fc0",
     "oriented/oriented_nor_g.dat": "25cda3d583e50505d7b575e30685383f7ad75ddb24c60b1059b954b37e538e6c",
     "oriented/oriented_nor_r.dat": "51b6bf8fd9f84d08d8877971043660acbed8335f67b7bbd46ce077a09ed874eb",
-    "oriented/oriented_normal.cal": "92a335a7b8a3af7adedea327b1c577d029399c2c588f5d105a66d3302c236326"
+    "oriented/oriented_normal.cal": "e0a5aacc0436b443467ef938803806be7bd1a93e5a9a6914747caef6325c15bc"
   },
   "rough16_set": {
     "manifest.json": "262082619c2738ef3ed94a2f540ebb8d5f172c0e27e8185d0f58f560c7f41406",
@@ -37,6 +37,6 @@
     "rough16_set/rough16_set_nor_b.dat": "5f7930b22f2ebc5ee1fbd7ba6f777af8ac610c90ede41a49f64c76b1040117e2",
     "rough16_set/rough16_set_nor_g.dat": "af85b2ce030eff96a7336dd414a6e4620eb69a259f2c9817fd4af208464d6745",
     "rough16_set/rough16_set_nor_r.dat": "aae3149bc99c63188b2340fc2c405a46a28eae2018f9a8253fbfcbb4590ce233",
-    "rough16_set/rough16_set_normal.cal": "15562f8e455b0e550fa1cb36e9d61c0084767729fbe7eb08ae083db86f37d4b6"
+    "rough16_set/rough16_set_normal.cal": "937c763ef14a7c7e308c0cb4777a79d1ff8107070be8bcbc8be633382593cd9d"
   }
 }

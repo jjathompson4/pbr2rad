@@ -51,8 +51,8 @@ class ConvertOptions:
     # Per-map rotation overrides (CCW degrees: 0, 90, 180, 270), keyed by
     # discover channel name ("albedo", "normal_gl", "normal_dx", "roughness",
     # "metalness", "ao", "displacement", "arm"). Maps without an entry keep
-    # their original orientation. Pixel-level rotation only — heavy rotations
-    # on normal maps may misalign lighting direction.
+    # their original orientation. A rotated or flipped source normal map has
+    # its vectors turned to match in its .cal (normal.orientation_remap).
     rotate_per_map: dict[str, int] = field(default_factory=dict)
     # Global flip overrides, applied to all maps (escape hatch).
     flip_h: bool = False
@@ -334,6 +334,9 @@ class _ChainInputs:
     normal_dats: tuple[str, str, str] | None   # (r, g, b) bare .dat names
     normal_is_dx: bool
     bump_scale: float
+    # How the source normal map's picture was flipped/rotated
+    # (normal.orientation_remap): its vectors are turned the same way.
+    normal_remap: tuple[float, float, float, float]
     rough_dat: str | None
     rough_modulation: float
 
@@ -365,8 +368,19 @@ def _write_material_chain(
         normal_cal_name = f"{stem}_normal.cal"
         # The normal .cal must include projection definitions (u, v)
         # because texdata's funcfile is the only .cal file it loads.
+        # The perturbation is built in the surface's tangent frame for THIS
+        # chain's projection, so the bumps lean along the texture's own u/v
+        # on walls, ceilings and curved surfaces too (cal.tangent_frame).
         normal_cal_text = cal_text + "\n" + normal_mod.generate_normal_cal(
             stem, is_dx=shared.normal_is_dx,
+            frame=cal_mod.tangent_frame(
+                proj.projection,
+                axis=proj.axis,  # type: ignore[arg-type]
+                u_scale=proj.u_scale,
+                v_scale=proj.v_scale,
+                swap_uv=proj.swap_uv,
+            ),
+            remap=shared.normal_remap,
         )
         (out_dir / normal_cal_name).write_text(normal_cal_text, encoding="ascii")
         dat_r, dat_g, dat_b = shared.normal_dats
@@ -410,9 +424,13 @@ def _convert_set_inner(
     opts: ConvertOptions,
 ) -> ConvertResult:
     # Apply per-map rotation + global flip overrides before any processing.
-    # Pixel-level only — does not remap normal-vector channel values.
+    # This moves pixels only; a source normal map's vectors are turned to
+    # match in its .cal (normal_remap below).
     if opts.rotate_per_map or opts.flip_h or opts.flip_v:
         pbr = _apply_orientation(pbr, work_dir, opts)
+    source_normal_key = next(
+        (k for k in ("normal_gl", "normal", "normal_dx") if k in pbr.maps), None,
+    )
 
     hdr_file = out_dir / f"{pbr.name}.hdr"
 
@@ -495,6 +513,14 @@ def _convert_set_inner(
     #    every chain written below)
     normal_dats: tuple[str, str, str] | None = None
     normal_is_dx = False
+    normal_remap = (1.0, 0.0, 0.0, 1.0)
+    if had_normal and source_normal_key is not None:
+        # An estimated normal map is derived from the already-oriented
+        # albedo, so only a source map needs its vectors turned.
+        normal_remap = normal_mod.orientation_remap(
+            opts.rotate_per_map.get(source_normal_key, 0),
+            flip_h=opts.flip_h, flip_v=opts.flip_v,
+        )
     if opts.normal and pbr.normal is not None:
         convention = normal_mod.detect_convention(pbr.maps)
         normal_is_dx = convention == "dx"
@@ -532,6 +558,7 @@ def _convert_set_inner(
         normal_dats=normal_dats,
         normal_is_dx=normal_is_dx,
         bump_scale=opts.bump_scale,
+        normal_remap=normal_remap,
         rough_dat=rough_dat,
         rough_modulation=opts.rough_modulation,
     )
