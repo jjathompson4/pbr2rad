@@ -209,8 +209,41 @@ function cancelRefine() {
 }
 
 // Ask the server for the full-quality preview of `jobId` and swap it in over
-// the draft once it has loaded. Without one (timeout, error, cancelled by
-// another visitor's job) the draft stays, labelled as a draft.
+// the draft once it has loaded. The server renders it in the background:
+// POST starts it, then GET long-polls (each poll answers as soon as the
+// render settles, or after REFINE_POLL_WAIT_S with "running"), so no request
+// stays open long enough for a proxy to cut it off. Without a new picture
+// (timed out, failed, cancelled by another visitor's job) the draft stays,
+// labelled as a draft, and the status line says why.
+const REFINE_POLL_WAIT_S = 10;
+const REFINE_POLL_MISSES = 3;    // dropped or failed polls tolerated in a row
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function pollRefine(jobId, data, me) {
+  const signal = me.controller.signal;
+  let misses = 0;
+  while (data && data.preview_status === "running" && refine === me) {
+    const q = new URLSearchParams({ wait: String(REFINE_POLL_WAIT_S) });
+    if (data.refine_id) q.set("refine_id", data.refine_id);
+    let resp = null;
+    try {
+      resp = await fetch(`/api/v1/jobs/${jobId}/refine?${q}`, { signal, cache: "no-store" });
+    } catch (err) {
+      if (signal.aborted) throw err;
+    }
+    if (resp && resp.ok) {
+      misses = 0;
+      data = await resp.json();
+      continue;
+    }
+    if (resp && resp.status === 404) return null;   // job expired, or the server restarted
+    if (++misses > REFINE_POLL_MISSES) return null;
+    const retry = resp && resp.status === 429 ? parseInt(resp.headers.get("Retry-After") || "5", 10) || 5 : 2;
+    await sleep(Math.min(BUSY_WAIT_MAX_S, retry) * 1000);
+  }
+  return data;
+}
+
 function startRefine(jobId, rerendered) {
   const me = { controller: new AbortController() };
   refine = me;
@@ -223,13 +256,14 @@ function startRefine(jobId, rerendered) {
         const resp = await fetch(`/api/v1/jobs/${jobId}/refine`, { method: "POST", signal: me.controller.signal });
         if (resp.status === 503 && attempt < BUSY_RETRIES) {
           const retry = Math.min(BUSY_WAIT_MAX_S, parseInt(resp.headers.get("Retry-After") || "5", 10) || 5);
-          await new Promise(r => setTimeout(r, retry * 1000));
+          await sleep(retry * 1000);
           if (refine !== me) return;
           continue;
         }
         if (resp.ok) data = await resp.json();
         break;
       }
+      data = await pollRefine(jobId, data, me);
       if (data && data.preview_url) {
         await new Promise(r => {
           const img = new Image();
@@ -245,11 +279,17 @@ function startRefine(jobId, rerendered) {
     if (refine !== me) return;
     refine = null;
     const done = rerendered ? "Re-rendered with overrides." : "Conversion complete!";
+    const status = data && data.preview_status;
     if (data && data.preview_url) {
       document.getElementById("preview-img").src = data.preview_url;
       if (currentJob) Object.assign(currentJob.data, { preview_url: data.preview_url, preview_status: data.preview_status });
       setPreviewBadge(null);
       setStatus(done, "success");
+    } else if (status === "timeout" || status === "error") {
+      // Say so: the full picture is not still on its way.
+      setPreviewBadge("draft", data);
+      const why = status === "timeout" ? "Full render timed out" : "Full render failed";
+      setStatus(`${done} ${why}, so the preview is the quick draft.`, "warning");
     } else {
       setPreviewBadge("draft", data || {});
       setStatus(done + " Preview is a quick draft.", "success");
@@ -720,21 +760,35 @@ function renderPHMapsGrid(maps) {
 //   roughness  - whenever a roughness map is present (used as scalar mean
 //                AND for varying-roughness if that option is on)
 //   metalness  - whenever a metalness map is present
-//   normal_gl/normal_dx - whenever the "Use normal map" option is on and
-//                a normal map is present
+//   normal     - whenever the "Use normal map" option is on: ONE normal map,
+//                OpenGL first, then an unlabelled one, then DirectX (the
+//                order of discover.PBRSet.normal_map), so a set with both
+//                GL and DX copies uses only the GL one
 //   ao, displacement - currently unused by the conversion
+const NORMAL_PREFERENCE = ["normal_gl", "normal", "normal_dx"];
+
 function updateMapUsage() {
   const useNormal = document.getElementById("opt-normal").checked;
-  document.querySelectorAll(".map-thumb").forEach(tile => {
+  const tiles = [...document.querySelectorAll(".map-thumb")];
+  const present = new Set(tiles.map(t => t.dataset.channel));
+  const normalCh = NORMAL_PREFERENCE.find(ch => present.has(ch));
+  tiles.forEach(tile => {
     const ch = tile.dataset.channel;
     let used = false;
+    let why = "";
     if (ch === "albedo") used = true;
     else if (ch === "roughness") used = true;
     else if (ch === "metalness") used = true;
-    else if (ch === "normal_gl" || ch === "normal_dx" || ch === "normal") used = useNormal;
+    else if (NORMAL_PREFERENCE.includes(ch)) {
+      used = useNormal && ch === normalCh;
+      if (useNormal && !used) why = "Only one normal map is used: the one marked USED.";
+    }
     tile.dataset.used = used ? "true" : "false";
     const badge = tile.querySelector(".map-thumb-usage-badge");
-    if (badge) badge.textContent = used ? "USED" : "IGNORED";
+    if (badge) {
+      badge.textContent = used ? "USED" : "IGNORED";
+      if (why) badge.title = why; else badge.removeAttribute("title");
+    }
   });
 }
 
@@ -848,7 +902,8 @@ function setPreviewBadge(kind, data) {
     badge.removeAttribute("data-tip");
     badge.removeAttribute("tabindex");
   } else if (kind === "draft") {
-    badge.innerHTML = "<strong>Draft render</strong>";
+    const why = { timeout: "Full render timed out", error: "Full render failed" }[data && data.preview_status];
+    badge.innerHTML = "<strong>Draft render</strong>" + (why ? `<span>${why}</span>` : "");
     badge.dataset.tip = "A quick draft render; the full-quality one didn't finish. It is a little grainier, and dark glossy finishes look slightly greyer than they really are. The material files are complete either way.";
     badge.tabIndex = 0;
   }

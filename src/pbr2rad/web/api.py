@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -9,10 +10,12 @@ import logging
 import os
 import threading
 import time
+import uuid
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image
@@ -25,7 +28,7 @@ from ..fetch import FetchError, _cache_root
 from ..pvw import make_preview_png, write_pvw
 from ..sources import SOURCES, TextureSource, get_catalog_fetcher, get_downloader, get_source
 from . import tempdir
-from .limits import rate_limit, rate_limit_light, rate_limit_refine
+from .limits import rate_limit, rate_limit_light, rate_limit_poll, rate_limit_refine
 from .models import (
     ChannelMap,
     ConvertOptionsRequest,
@@ -39,6 +42,8 @@ from .models import (
     SourceConvertRequest,
 )
 from .preview import (
+    PREVIEW_CANCELLED,
+    PREVIEW_ERROR,
     PREVIEW_QUALITY_DRAFT,
     PREVIEW_QUALITY_FULL,
     PREVIEW_UNAVAILABLE,
@@ -69,6 +74,31 @@ _BUSY_DETAIL = (
 _refine_cancel: threading.Event | None = None
 _refine_cancel_guard = threading.Lock()
 _PREEMPT_WAIT_S = 10.0
+
+# A refine runs in a background thread (2026-11-10, Bug 6): POST
+# /jobs/{id}/refine answers 202 at once and the page long-polls GET
+# /jobs/{id}/refine until the render settles. A request that stayed open for
+# the whole render (up to REFINE_TIMEOUT_S) was cut off by proxies with a
+# ~30 s limit in front of some visitors, who then never got the full picture.
+# The latest refine of each job is kept here (in memory: one instance).
+REFINE_RUNNING = "running"
+_REFINE_POLL_MAX_S = 10.0       # one GET waits at most this long for the result
+_REFINE_POLL_STEP_S = 0.2
+_REFINE_KEEP_S = 30 * 60        # forget settled refines after the job's lifetime
+
+
+@dataclass
+class _Refine:
+    job_id: str
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    done: threading.Event = field(default_factory=threading.Event)
+    result: PreviewResult | None = None
+    preview_url: str | None = None
+    settled_at: float = 0.0
+
+
+_refines: dict[str, _Refine] = {}
+_refines_guard = threading.Lock()
 # Per-job preview inputs (paths relative to the job dir, rig, ...) saved after
 # every conversion so /jobs/{id}/refine can re-render without re-converting.
 _PREVIEW_STATE_FILE = "preview.json"
@@ -663,9 +693,58 @@ async def rerender_job(job_id: str, req: RerenderRequest):
     )
 
 
-@router.post("/jobs/{job_id}/refine", response_model=PreviewResponse, dependencies=[Depends(rate_limit_refine)])
-async def refine_job_preview(job_id: str):
-    """Re-render a job's preview at full quality, without re-converting.
+def _refine_response(rec: _Refine) -> PreviewResponse:
+    if not rec.done.is_set():
+        return PreviewResponse(job_id=rec.job_id, refine_id=rec.id, preview_status=REFINE_RUNNING)
+    result = rec.result
+    return PreviewResponse(
+        job_id=rec.job_id, refine_id=rec.id, preview_url=rec.preview_url,
+        preview_status=result.status,
+        preview_error=None if result.rendered else result.detail,
+    )
+
+
+def _run_refine(rec: _Refine, inputs: dict, cancel: threading.Event) -> None:
+    """Background thread body: render, release the one-job lock, publish.
+
+    The lock is released before the result is published, so a page that
+    sees the refine settle and sends its next change straight away finds the
+    server free."""
+    global _refine_cancel
+    try:
+        preview = _render_job_preview(
+            inputs, quality=PREVIEW_QUALITY_FULL, draft_fallback=False,
+            keep_on_failure=True, cancel=cancel, full_timeout=REFINE_TIMEOUT_S,
+        )
+    except Exception:
+        log.exception("preview refine failed for job %s", rec.job_id)
+        preview = PreviewResult(PREVIEW_ERROR, "The preview render failed.")
+    finally:
+        with _refine_cancel_guard:
+            if _refine_cancel is cancel:
+                _refine_cancel = None
+        _CONVERT_LOCK.release()
+    tempdir.touch_job(rec.job_id)
+    if preview.rendered:
+        rec.preview_url = f"/api/v1/preview/{rec.job_id}?r={int(time.time() * 1000)}"
+    rec.result = preview
+    rec.settled_at = time.monotonic()
+    rec.done.set()
+
+
+def _forget_old_refines() -> None:
+    cutoff = time.monotonic() - _REFINE_KEEP_S
+    with _refines_guard:
+        for job_id in [j for j, r in _refines.items() if r.done.is_set() and r.settled_at < cutoff]:
+            del _refines[job_id]
+
+
+@router.post("/jobs/{job_id}/refine", response_model=PreviewResponse, status_code=202,
+             dependencies=[Depends(rate_limit_refine)])
+async def refine_job_preview(job_id: str, response: Response):
+    """Start re-rendering a job's preview at full quality, without
+    re-converting. Answers ``202`` with ``preview_status: "running"``; poll
+    ``GET /jobs/{job_id}/refine`` for the result.
 
     The second half of a progressive preview: the web app converts or
     re-renders with ``preview_quality: "draft"``, shows that picture, then
@@ -678,29 +757,55 @@ async def refine_job_preview(job_id: str):
     if inputs is None:
         raise HTTPException(404, "Job expired — convert the material again to keep tuning it.")
     if not radiance_available():
+        response.status_code = 200
         return PreviewResponse(job_id=job_id, preview_status=PREVIEW_UNAVAILABLE)
     if not _CONVERT_LOCK.acquire(blocking=False):
         raise HTTPException(503, _BUSY_DETAIL, headers={"Retry-After": "15"})
     cancel = threading.Event()
-    with _refine_cancel_guard:
-        _refine_cancel = cancel
+    rec = _Refine(job_id)
     try:
-        preview = await run_in_threadpool(
-            lambda: _render_job_preview(
-                inputs, quality=PREVIEW_QUALITY_FULL, draft_fallback=False,
-                keep_on_failure=True, cancel=cancel, full_timeout=REFINE_TIMEOUT_S,
-            )
-        )
-    finally:
         with _refine_cancel_guard:
-            _refine_cancel = None
+            _refine_cancel = cancel
+        with _refines_guard:
+            _refines[job_id] = rec
+        threading.Thread(
+            target=_run_refine, args=(rec, inputs, cancel),
+            name=f"refine-{job_id}", daemon=True,
+        ).start()
+    except BaseException:
+        with _refine_cancel_guard:
+            if _refine_cancel is cancel:
+                _refine_cancel = None
         _CONVERT_LOCK.release()
-    tempdir.touch_job(job_id)
-    url = f"/api/v1/preview/{job_id}?r={int(time.time() * 1000)}" if preview.rendered else None
-    return PreviewResponse(
-        job_id=job_id, preview_url=url, preview_status=preview.status,
-        preview_error=None if preview.rendered else preview.detail,
-    )
+        raise
+    _forget_old_refines()
+    return _refine_response(rec)
+
+
+@router.get("/jobs/{job_id}/refine", response_model=PreviewResponse,
+            dependencies=[Depends(rate_limit_poll)])
+async def refine_job_status(
+    job_id: str,
+    response: Response,
+    refine_id: str | None = Query(default=None, max_length=32),
+    wait: float = Query(default=0.0, ge=0.0, le=60.0),
+):
+    """The latest refine of ``job_id``. With ``wait`` (seconds, at most 10
+    are honoured) it answers as soon as the refine settles, so a page can
+    long-poll without holding a request open for the whole render. Asking
+    for ``refine_id`` after a newer refine of the job started answers
+    ``"cancelled"``: that refine was superseded."""
+    response.headers["Cache-Control"] = "no-store"
+    with _refines_guard:
+        rec = _refines.get(job_id)
+    if rec is None:
+        raise HTTPException(404, "No preview refine for this job.")
+    if refine_id is not None and refine_id != rec.id:
+        return PreviewResponse(job_id=job_id, refine_id=refine_id, preview_status=PREVIEW_CANCELLED)
+    deadline = time.monotonic() + min(wait, _REFINE_POLL_MAX_S)
+    while not rec.done.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(_REFINE_POLL_STEP_S)
+    return _refine_response(rec)
 
 
 @router.post("/sources/{source}/convert", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])

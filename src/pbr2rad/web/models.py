@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 PreviewStatus = Literal["ok", "draft", "timeout", "error", "cancelled", "unavailable"]
+# A refine runs in the background: "running" until it settles on a PreviewStatus.
+RefineStatus = Literal["running", "ok", "draft", "timeout", "error", "cancelled", "unavailable"]
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +152,15 @@ class ConvertResponse(BaseModel):
 
 
 class PreviewResponse(BaseModel):
-    """Body of ``POST /jobs/{job_id}/refine``: the job's preview, re-rendered
-    at full quality. Without a new picture (``preview_url`` null) the draft
-    already served stays the job's preview."""
+    """Body of ``POST`` and ``GET /jobs/{job_id}/refine``: the job's preview,
+    re-rendered at full quality in the background. ``preview_status`` is
+    ``"running"`` until the render settles; without a new picture
+    (``preview_url`` null) the draft already served stays the job's preview.
+    ``refine_id`` names this refine, so a poll can tell it from a newer one."""
     job_id: str
+    refine_id: str | None = None
     preview_url: str | None = None
-    preview_status: PreviewStatus = "unavailable"
+    preview_status: RefineStatus = "unavailable"
     preview_error: str | None = None
 
 

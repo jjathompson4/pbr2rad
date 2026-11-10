@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Full-quality preview cut off after a bump change (Bug 6).** The refine
+  now runs in the background: `POST /api/v1/jobs/{id}/refine` answers `202`
+  (`preview_status: "running"`, `refine_id`) and the page long-polls `GET
+  /api/v1/jobs/{id}/refine?wait=10`, so no request stays open for the render.
+  A single ~30 s request was being cut off with a 502 by a proxy on the
+  visitor's network, so the full picture never arrived.
+- **High bump renders 4–7× faster.** A black core inside the preview ball ends
+  the reflected rays a strong normal map tips into the sphere, which each ran
+  a full ambient calculation for a guaranteed-black answer. Red Brick 03 at
+  bump × 5: 34.6 s → 4.9 s locally; on production bump × 3 and × 5 used to
+  time out at 60 s. Pictures unchanged (mean within 0.15 %).
+- **"Full render timed out" / "Full render failed"** now shows in the status
+  line and on the Draft render badge when that is why the draft stayed.
+- **Only the normal map that is used is badged USED (Bug 5).** Sets with both
+  OpenGL and DirectX normal maps (Poly Haven) marked both as used; the
+  conversion reads one (OpenGL first), and the other now shows IGNORED.
+  Assets v=42.
+
 ### Added
 
 - **Progressive previews.** Converts and re-renders return a quick draft

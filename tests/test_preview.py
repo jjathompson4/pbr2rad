@@ -183,6 +183,18 @@ def test_scene_text_is_the_studio_environment():
     assert (preview.ENV_HDR_DIR / preview.ENV_HDR_NAME).is_file()        # shipped with the package
 
 
+@pytest.mark.parametrize("rig", ["hdri", "lights"])
+def test_scene_has_a_black_core(rig, monkeypatch):
+    """Rays a strong normal map tips into the ball end on a zero glow just
+    inside it (no ambient calculation for a guaranteed-black answer)."""
+    text = preview._scene_text("mat", rig)
+    core = re.search(r"^pbr2rad_core_black sphere ball_core\n0\n0\n4 0 0 0 (\S+)$", text, flags=re.M)
+    assert core and float(core.group(1)) == pytest.approx(0.999)
+    assert "void glow pbr2rad_core_black\n0\n0\n4 0 0 0 0\n" in text
+    monkeypatch.setattr(preview, "BLACK_CORE", False)
+    assert "ball_core" not in preview._scene_text("mat", rig)
+
+
 def test_env_lookup_follows_direction_and_rotation(monkeypatch):
     """The irradiance model samples the same equirect mapping as the .cal:
     zenith → top row, horizon → middle row, rotation moves the lookup."""
