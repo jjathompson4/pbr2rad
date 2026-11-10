@@ -72,7 +72,48 @@ let uploadReady = false;       // channels discovered for the current upload
 function setInFlight(kind) {
   inFlight = kind;
   document.getElementById("tune-panel").classList.toggle("busy", !!kind);
+  document.getElementById("status").classList.toggle("busy", !!kind);
   syncConvertButtons();
+  setRenderProgress(kind);
+}
+
+// A convert or re-render takes ~10-20 s on the server, so while one runs the
+// Radiance sphere gets a spinner and an elapsed-seconds counter (and the
+// status line a spinner): the page should never look frozen. The overlay is
+// built here, not in index.html, so an older cached page still gets it.
+let progressTimer = null;
+let progressLabel = "";
+
+function progressEl() {
+  let el = document.getElementById("render-progress");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "render-progress";
+    el.className = "render-progress";
+    el.hidden = true;
+    el.setAttribute("aria-hidden", "true");   // the status line already announces it
+    el.innerHTML = '<span class="spinner"></span><span class="render-progress-text"></span>';
+    document.getElementById("preview-out-fig").appendChild(el);
+  }
+  return el;
+}
+
+function setRenderProgress(kind) {
+  const el = progressEl();
+  clearInterval(progressTimer);
+  progressTimer = null;
+  document.getElementById("preview-out-fig").classList.toggle("rendering", !!kind);
+  el.hidden = !kind;
+  if (!kind) return;
+  progressLabel = kind === "convert" ? "Converting" : "Rendering";
+  const text = el.querySelector(".render-progress-text");
+  const t0 = performance.now();
+  const tick = () => {
+    const s = Math.floor((performance.now() - t0) / 1000);
+    text.textContent = s < 1 ? progressLabel + "…" : `${progressLabel}… ${s} s`;
+  };
+  tick();
+  progressTimer = setInterval(tick, 1000);
 }
 
 function syncConvertButtons() {
@@ -98,7 +139,10 @@ async function postWithRetry(request, busyText) {
     if (resp.status !== 503 || attempt >= BUSY_RETRIES) return resp;
     const retry = Math.min(BUSY_WAIT_MAX_S, parseInt(resp.headers.get("Retry-After") || "5", 10) || 5);
     setStatus(`Server busy, retrying in ${retry}s…`);
+    const label = progressLabel;
+    progressLabel = "Waiting for the server";
     await new Promise(r => setTimeout(r, retry * 1000));
+    progressLabel = label;
     setStatus(busyText);
   }
 }
@@ -672,7 +716,7 @@ function getOptions({ fresh = false } = {}) {
 function setStatus(msg, type = "") {
   const el = document.getElementById("status");
   el.textContent = msg;
-  el.className = "status " + type;
+  el.className = "status " + type + (inFlight ? " busy" : "");
 }
 
 // The last conversion (for the tune sliders) and the catalog item it came

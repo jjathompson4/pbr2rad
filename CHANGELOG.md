@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Render progress indicator.** While a convert or re-render runs (~10–20 s
+  on the server), the Radiance sphere dims under a spinner pill with an
+  elapsed-seconds counter ("Rendering… 12 s", "Converting…", "Waiting for
+  the server" during a busy retry), and the status line gets a spinner, so
+  the page never looks frozen. Built in JS so a cached older page gets it
+  too. Assets v=40.
 - **Reference-matched preview (lighting, exposure, framing, look).** The rig is
   neutral (every light grey — the old one integrated to ≈ (0.81, 1.00, 1.37)
   on any surface, a clear blue cast), soft (two broad `light` discs, 40°/50°)
