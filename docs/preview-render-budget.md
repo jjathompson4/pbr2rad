@@ -12,11 +12,33 @@ to `AMBIENT_BOUNCES` / `PREVIEW_FULL_TIMEOUT_S`), surfaced by
 | Draft render (`rpict`) | 20 s | `preview_status: "timeout"`, no preview |
 | `oconv`, `pfilt`, `ra_bmp` | 30 s each | `preview_status: "timeout"` |
 
-The production host is one shared vCPU, about 3× slower than a laptop. A
-typical full render takes ~12 s there (Bricks105 1k: 4 s locally), so 40 s
-is generous for normal materials. The 40 + 20 s split keeps the worst case
-near the old single 60 s cap. Before this change, hitting that cap returned
-`preview_url: null` with no reason.
+The 40 + 20 s split keeps the worst case near the old single 60 s cap.
+Before this change, hitting that cap returned `preview_url: null` with no
+reason.
+
+**The production host's speed depends on CPU burst balance** (corrected
+2026-11-10; the first version of this note said "about 3× slower than a
+laptop"). pbr2rad runs on one Fly `shared-cpu-1x` machine that scales to
+zero when idle. A shared vCPU runs at full speed only while it has burst
+balance, and is otherwise held to a 6.25 % baseline (5 ms per 80 ms), about
+16× slower. A machine starts with 5 s of balance, which refills only while
+it is idle ([Fly CPU performance docs](https://fly.io/docs/machines/cpu-performance/)).
+Measured on prod right after the v=38 deploy, Bricks105 1k:
+
+| Request | Time | Preview |
+|---|---|---|
+| Convert, bump × 1 | 17.6 s | ok |
+| Re-render, bump × 3 (first, with balance left) | 8.9 s | ok |
+| Re-render, bump × 3 (balance draining) | 26.4 s | ok |
+| Re-render, bump × 1 (throttled) | 81.9 s | timeout: full and draft both ran out |
+| Re-render, bump × 2 (throttled) | 74.9 s | timeout |
+
+Locally the same full render takes ~4 s. So at full speed the budget is
+generous, and once throttled neither render fits it. That is a hosting
+limit, not a render setting, so on 2026-11-10 production moved to a
+dedicated-CPU `performance-1x` (2 GB), which is never throttled (Jeff's
+call; see `fly.toml`). It is billed per second while running, and
+scale-to-zero stays on, so idle time still costs ~$0.
 
 The draft render (`DRAFT_AMBIENT`) uses one bounce, `-ad 256 -as 0 -aa 0.2`,
 folded specular (rpict's default `-st`), and no 2× supersampling. It is 6–8×

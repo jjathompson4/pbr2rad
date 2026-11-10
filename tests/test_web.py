@@ -369,3 +369,7 @@ def test_index_serves_html(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "pbr2rad" in resp.text
+    # The page must be revalidated on every load, or a cached copy can pair
+    # with a newer /static/app.js after a deploy.
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers.get("etag")

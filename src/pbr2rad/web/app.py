@@ -121,7 +121,10 @@ def create_app() -> FastAPI:
     async def index():
         index_file = static_dir / "index.html"
         if index_file.exists():
-            return FileResponse(index_file)
+            # Always revalidate the page (cheap: ETag). Without this, browsers
+            # cached it heuristically for days, and after a deploy a stale
+            # page could load the new /static/app.js (the server ignores ?v=).
+            return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
         return {"message": "pbr2rad API — see /docs for endpoints"}
 
     return app

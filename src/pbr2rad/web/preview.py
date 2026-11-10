@@ -171,10 +171,12 @@ AMBIENT_BOUNCES = 1
 # Time budget for one preview, in rpict wall time. The full-quality render gets
 # PREVIEW_FULL_TIMEOUT_S; if it runs out, a draft render (DRAFT_AMBIENT: folded
 # specular, coarse ambient, no supersampling) gets PREVIEW_DRAFT_TIMEOUT_S so
-# the user still sees the material instead of no sphere. The production host
-# is one shared vCPU, about 3x slower than a laptop; a typical full render
-# takes ~12 s there. ``PreviewResult.status`` says which one shipped and the
-# API passes it on as ``preview_status``. See docs/preview-render-budget.md.
+# the user still sees the material instead of no sphere. The budget assumes a
+# CPU that is not throttled: on the Fly shared-cpu-1x the site used until
+# 2026-11-10 (full speed only while it had burst balance, then a 6.25 %
+# baseline, ~16x slower) neither render fit, so production now runs on a
+# dedicated performance-1x. ``PreviewResult.status`` says which one shipped and
+# the API passes it on as ``preview_status``. See docs/preview-render-budget.md.
 PREVIEW_FULL_TIMEOUT_S = 40.0
 PREVIEW_DRAFT_TIMEOUT_S = 20.0
 DRAFT_AMBIENT = ("-ab", "1", "-aa", "0.2", "-ad", "256", "-as", "0", "-ss", "1")

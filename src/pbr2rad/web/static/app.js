@@ -1,5 +1,21 @@
 /* pbr2rad web frontend — vanilla JS */
 
+// A browser may still hold an older cached index.html (it was served without
+// Cache-Control until v=39) while /static/app.js already returns this script,
+// since the server ignores the ?v= query. Markup older than this script lacks
+// #preview-badge: reload once so the page, styles and script match. The
+// sessionStorage guard keeps a page that stays stale from reloading forever.
+(function reloadIfMarkupIsStale() {
+  if (document.getElementById("preview-badge")) return;
+  try {
+    if (sessionStorage.getItem("pbr2rad-stale-markup-reload")) return;
+    sessionStorage.setItem("pbr2rad-stale-markup-reload", "1");
+  } catch (e) {
+    return;
+  }
+  location.reload();
+})();
+
 const CHANNELS = [
   "albedo", "roughness", "metalness",
   "normal_gl", "normal_dx", "normal",
@@ -684,8 +700,15 @@ function resultStatus(data, rerendered, stale) {
 // Badge over the Radiance sphere: "stale" (a re-render made no new picture,
 // the previous one is still showing), "draft", or none.
 function setPreviewBadge(kind, data) {
-  const badge = document.getElementById("preview-badge");
   const fig = document.getElementById("preview-out-fig");
+  let badge = document.getElementById("preview-badge");
+  if (!badge) {
+    // Stale cached markup that the one-time reload above didn't fix.
+    badge = document.createElement("div");
+    badge.id = "preview-badge";
+    badge.setAttribute("role", "status");
+    fig.appendChild(badge);
+  }
   fig.classList.toggle("stale", kind === "stale");
   badge.className = "preview-badge" + (kind ? " " + kind : "");
   if (kind === "stale") {
