@@ -348,6 +348,14 @@
   follow-up re-render, and a server-busy 503 (another visitor's job) is
   retried up to three times per its `Retry-After` for both convert and
   re-render.
+- **Stale cached page after a deploy.** `index.html` was served without
+  `Cache-Control`, so browsers cached it heuristically for days, while
+  `/static/app.js?v=…` (the server ignores the query) already returned the
+  new script. On the v=38 deploy that pairing broke every result
+  ("Re-render failed: Cannot set properties of null"). The page is now
+  served `no-cache` (revalidated via ETag), and a script that finds older
+  markup reloads once (sessionStorage-guarded) and tolerates a missing
+  badge element if the reload doesn't help. Assets v=39.
 - **Reference sphere from the wrong material.** Selecting another tile while
   a conversion ran paired the result with the newly selected tile's
   reference render; the reference is now pinned at click time.
