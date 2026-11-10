@@ -51,6 +51,38 @@ Output panel keeps the previous picture, dimmed, under a "Preview out of
 date" badge. `render_preview` deletes the old `preview.png` first, so the
 zip never ships a thumbnail of the previous settings.
 
+## Progressive previews (2026-11-10)
+
+Each convert and re-render from the web app now asks for the **draft**
+render (`preview_quality: "draft"`), which is about 7× cheaper than the full
+one. The page shows that picture, then calls `POST /api/v1/jobs/{id}/refine`,
+which re-renders only the preview at full quality (no re-conversion) and
+swaps it in. Making every preview a draft was rejected: the draft folds the
+specular lobe, so dark glossy materials read slightly greyer (Wood028 mean
+RGB 75/66/61 full against 80/72/68 draft). The draft is fine as a first
+look, not as the picture you judge.
+
+- **A refine never blocks anyone.** While it holds the one-job lock its
+  cancel event is published, and any convert or re-render that arrives (from
+  anyone) sets it and takes the lock. `rpict` is killed within ~0.1 s
+  (`preview._run` polls the child). The page also abandons its own refine
+  the moment a slider moves or Convert is clicked.
+- **Budget:** the draft gets the 20 s draft budget. The refine gets 60 s
+  (`REFINE_TIMEOUT_S`, the old single cap) and no draft fallback. If it
+  times out, fails or is cancelled, the draft stays as the job's preview
+  (`keep_on_failure`) and the page labels it "Draft render".
+- **Atomic picture:** `preview.png` is written to a temp file and moved into
+  place, so a killed render never leaves half a PNG.
+- **Rate limits:** refines have their own 20/min bucket
+  (`rate_limit_refine`), so a visitor still gets 20 changes a minute.
+- Clients that don't send `preview_quality` (older cached pages) get the
+  full render as before.
+
+Measured locally (Bricks105 1k): convert draft on screen at 2.3 s, full at
+6.8 s; re-render draft 1.0–1.1 s, refine ~4.3 s; a slider move 1.3 s into a
+refine got its new draft 1.1 s later. Production is roughly 4× slower per
+render, so expect the draft in ~4 s and the full picture ~15 s later.
+
 ## Why high bump values were slow
 
 Bump × multiplies the `texdata` normal perturbation. At × 3 an edge texel (a

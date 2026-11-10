@@ -16,6 +16,8 @@ import math
 import os
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -181,11 +183,53 @@ PREVIEW_FULL_TIMEOUT_S = 40.0
 PREVIEW_DRAFT_TIMEOUT_S = 20.0
 DRAFT_AMBIENT = ("-ab", "1", "-aa", "0.2", "-ad", "256", "-as", "0", "-ss", "1")
 
+# Progressive previews (2026-11-10): the web app asks for the draft straight
+# away with each convert / re-render (``quality="draft"``, ~7x faster than the
+# full render), shows it, then asks the server to refine it at full quality.
+# A refine blocks nobody (any new job cancels it, see api._acquire_for_job),
+# so it gets the old single 60 s cap and no draft fallback.
+PREVIEW_QUALITY_FULL = "full"
+PREVIEW_QUALITY_DRAFT = "draft"
+REFINE_TIMEOUT_S = 60.0
+
 PREVIEW_OK = "ok"                    # full-quality render
-PREVIEW_DRAFT = "draft"              # full render ran out of time; draft shipped
-PREVIEW_TIMEOUT = "timeout"          # draft ran out of time too: no preview
-PREVIEW_ERROR = "error"              # a Radiance tool failed: no preview
+PREVIEW_DRAFT = "draft"              # draft render (asked for, or the full ran out of time)
+PREVIEW_TIMEOUT = "timeout"          # ran out of time: no new picture
+PREVIEW_ERROR = "error"              # a Radiance tool failed: no new picture
+PREVIEW_CANCELLED = "cancelled"      # stopped by ``cancel`` (a refine giving way)
 PREVIEW_UNAVAILABLE = "unavailable"  # Radiance not installed
+
+
+class PreviewCancelled(Exception):
+    """A render tool was killed because its ``cancel`` event was set."""
+
+
+def _run(cmd, *, stdout=None, timeout: float, env: dict,
+         cancel: threading.Event | None = None) -> None:
+    """``subprocess.run(check=True)`` for one Radiance tool. With ``cancel``
+    the child is polled every 0.1 s and killed as soon as the event is set
+    (``PreviewCancelled``) or ``timeout`` passes (``TimeoutExpired``)."""
+    if cancel is None:
+        subprocess.run(cmd, stdout=stdout, stderr=subprocess.PIPE,
+                       check=True, timeout=timeout, env=env)
+        return
+    if cancel.is_set():
+        raise PreviewCancelled(cmd[0])
+    proc = subprocess.Popen(cmd, stdout=stdout, stderr=subprocess.PIPE, env=env)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            _, err = proc.communicate(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel.is_set() or time.monotonic() >= deadline:
+                proc.kill()
+                proc.communicate()
+                if cancel.is_set():
+                    raise PreviewCancelled(cmd[0]) from None
+                raise subprocess.TimeoutExpired(cmd, timeout) from None
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=err)
 
 
 @dataclass(frozen=True)
@@ -565,6 +609,10 @@ def render_preview(
     rig: str = RIG_LIGHTS,
     source: str | None = None,
     roughness: float | None = None,
+    quality: str = PREVIEW_QUALITY_FULL,
+    draft_fallback: bool = True,
+    keep_on_failure: bool = False,
+    cancel: threading.Event | None = None,
     full_timeout: float = PREVIEW_FULL_TIMEOUT_S,
     draft_timeout: float = PREVIEW_DRAFT_TIMEOUT_S,
 ) -> PreviewResult:
@@ -572,18 +620,30 @@ def render_preview(
 
     ``roughness`` (the material's mean perceptual roughness) decides whether
     the lights rig samples the specular lobe or folds it — see
-    ``SPECULAR_SAMPLE_MAX_ROUGHNESS``. A full render that runs past
-    ``full_timeout`` is replaced by a draft render (see the time budget
-    above). ``output_png`` is removed first, so it exists afterwards only if
-    the result is ``rendered``: a failed re-render must not leave the previous
-    settings' picture behind as this job's preview and zip thumbnail.
+    ``SPECULAR_SAMPLE_MAX_ROUGHNESS``.
+
+    ``quality="draft"`` renders the draft settings straight away (the first
+    half of a progressive preview). ``"full"`` renders full quality and, past
+    ``full_timeout``, falls back to a draft unless ``draft_fallback`` is off
+    (a refine: the user already has the draft). ``cancel`` makes the render
+    stop as soon as the event is set (``PREVIEW_CANCELLED``).
+
+    The PNG is written to a temp file and moved into place, so a cancelled or
+    failing render never leaves a half-written picture. Unless
+    ``keep_on_failure``, ``output_png`` is removed first, so it exists
+    afterwards only if the result is ``rendered``: a failed re-render must
+    not leave the previous settings' picture behind as this job's preview and
+    zip thumbnail. (A refine keeps it: the draft shows the same settings.)
     """
+    if quality not in (PREVIEW_QUALITY_FULL, PREVIEW_QUALITY_DRAFT):
+        raise ValueError(f"unknown preview quality {quality!r}")
     if not radiance_available():
         return PreviewResult(PREVIEW_UNAVAILABLE, "Radiance is not installed on this server.")
 
     work = output_png.parent
     name = rad_file.stem
-    output_png.unlink(missing_ok=True)
+    if not keep_on_failure:
+        output_png.unlink(missing_ok=True)
 
     # Scene: a unit sphere with the material under test, lit by key + fill
     # discs, a sky dome and a dim lower-hemisphere environment. The web app
@@ -622,39 +682,38 @@ def render_preview(
     octree = work / "preview.oct"
     hdr = work / "preview.hdr"
 
+    def tool(cmd, out: Path | None = None, timeout: float = 30) -> None:
+        if out is None:
+            _run(cmd, timeout=timeout, env=env, cancel=cancel)
+            return
+        with open(out, "wb") as f:
+            _run(cmd, stdout=f, timeout=timeout, env=env, cancel=cancel)
+
     try:
-        # Compile
-        with open(octree, "wb") as f:
-            subprocess.run(
-                ["oconv", str(rad_file), str(scene_rad)],
-                stdout=f, stderr=subprocess.PIPE,
-                check=True, timeout=30, env=env,
-            )
+        tool(["oconv", str(rad_file), str(scene_rad)], octree)
 
         def rpict(px: int, ambient_args, timeout: float) -> None:
-            with open(hdr, "wb") as f:
-                subprocess.run(
-                    [
-                        "rpict",
-                        # Straight-on view aimed at the origin; distance and
-                        # FOV put the unit sphere at ~95 % of the frame width.
-                        "-vp", *(f"{c:g}" for c in _CAM_VP),
-                        "-vd", *(f"{c:g}" for c in _CAM_VD),
-                        "-vu", *(f"{c:g}" for c in _CAM_VU),
-                        "-vh", f"{_CAM_FOV_DEG:g}", "-vv", f"{_CAM_FOV_DEG:g}",
-                        "-x", str(px), "-y", str(px),
-                        *ambient_args,
-                        # Adaptive pixel sampling: sample every 2nd pixel and
-                        # refine where neighbours disagree (-pt 0.05 default).
-                        # Visually identical to -ps 1 here (textures force
-                        # refinement) but the 68-source direct loop then runs
-                        # on far fewer points: Fabric030 11.3 s → 1.7 s.
-                        "-ps", "2",
-                        str(octree),
-                    ],
-                    stdout=f, stderr=subprocess.PIPE,
-                    check=True, timeout=timeout, env=env,
-                )
+            tool(
+                [
+                    "rpict",
+                    # Straight-on view aimed at the origin; distance and FOV
+                    # put the unit sphere at ~95 % of the frame width.
+                    "-vp", *(f"{c:g}" for c in _CAM_VP),
+                    "-vd", *(f"{c:g}" for c in _CAM_VD),
+                    "-vu", *(f"{c:g}" for c in _CAM_VU),
+                    "-vh", f"{_CAM_FOV_DEG:g}", "-vv", f"{_CAM_FOV_DEG:g}",
+                    "-x", str(px), "-y", str(px),
+                    *ambient_args,
+                    # Adaptive pixel sampling: sample every 2nd pixel and
+                    # refine where neighbours disagree (-pt 0.05 default).
+                    # Visually identical to -ps 1 here (textures force
+                    # refinement) but the 68-source direct loop then runs on
+                    # far fewer points: Fabric030 11.3 s → 1.7 s.
+                    "-ps", "2",
+                    str(octree),
+                ],
+                hdr, timeout,
+            )
 
         # Render. Light rig: one ambient bounce over a dim glow surround
         # (direct highlights from the light discs). HDRI rig: all light is the
@@ -662,16 +721,22 @@ def render_preview(
         # sampled against it (-st/-ss; Radiance's default -st 0.15 would fold
         # plastics' 5 % into diffuse). Sampled renders run at 2x for a
         # Gaussian pfilt reduce that averages the glossy-sampling speckle.
-        draft = False
-        try:
-            rpict(size * ss, ambient, full_timeout)
-        except subprocess.TimeoutExpired:
-            log.warning(
-                "preview render ran past %gs for %s; rendering a draft",
-                full_timeout, rad_file.name,
-            )
+        if quality == PREVIEW_QUALITY_DRAFT:
             draft, ss = True, 1
             rpict(size, DRAFT_AMBIENT, draft_timeout)
+        else:
+            draft = False
+            try:
+                rpict(size * ss, ambient, full_timeout)
+            except subprocess.TimeoutExpired:
+                if not draft_fallback:
+                    raise
+                log.warning(
+                    "preview render ran past %gs for %s; rendering a draft",
+                    full_timeout, rad_file.name,
+                )
+                draft, ss = True, 1
+                rpict(size, DRAFT_AMBIENT, draft_timeout)
 
         # Exposure: fixed (derived from the rig, comparable across materials)
         # unless auto mode is requested; auto measures the sphere's own pixels.
@@ -687,28 +752,28 @@ def render_preview(
         # Convert to PNG via pfilt + ra_bmp + Pillow
         filtered = work / "preview_filt.hdr"
         bmp = work / "preview.bmp"
-        with open(filtered, "wb") as f:
-            subprocess.run(
-                ["pfilt", "-1", "-e", f"{exposure:.4g}",
-                 *(["-x", f"/{ss}", "-y", f"/{ss}", "-r", "0.6"] if ss > 1 else []),
-                 str(hdr)],
-                stdout=f, stderr=subprocess.PIPE,
-                check=True, timeout=30, env=env,
-            )
-        subprocess.run(
-            ["ra_bmp", str(filtered), str(bmp)],
-            stderr=subprocess.PIPE, check=True, timeout=30, env=env,
+        tool(
+            ["pfilt", "-1", "-e", f"{exposure:.4g}",
+             *(["-x", f"/{ss}", "-y", f"/{ss}", "-r", "0.6"] if ss > 1 else []),
+             str(hdr)],
+            filtered,
         )
+        tool(["ra_bmp", str(filtered), str(bmp)])
 
         from PIL import Image
+        tmp_png = output_png.with_name(output_png.name + ".tmp")
         with Image.open(bmp) as img:
             rgba = img.convert("RGBA")
             if rgba.size == (size, size):
                 rgba.putalpha(Image.fromarray(sphere_alpha(size), mode="L"))
             rgba = apply_look(rgba)
-            rgba.save(output_png)
+            rgba.save(tmp_png, format="PNG")
+        os.replace(tmp_png, output_png)
         return PreviewResult(PREVIEW_DRAFT if draft else PREVIEW_OK)
 
+    except PreviewCancelled as exc:
+        log.info("preview render cancelled (%s) for %s", exc, rad_file.name)
+        return PreviewResult(PREVIEW_CANCELLED, "The preview render gave way to a newer request.")
     except subprocess.TimeoutExpired as exc:
         log.warning("preview render timed out (%s) for %s", exc.cmd[0], rad_file.name)
         return PreviewResult(PREVIEW_TIMEOUT, "The preview render ran out of time.")

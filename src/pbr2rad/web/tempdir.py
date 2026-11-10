@@ -74,20 +74,21 @@ def touch_job(job_id: str) -> None:
             pass
 
 
-def write_job_state(job_id: str, state: dict) -> None:
-    """Persist what a job was converted from/with so it can be re-rendered."""
+def write_job_state(job_id: str, state: dict, *, name: str = JOB_STATE_FILE) -> None:
+    """Persist what a job was converted from/with so it can be re-rendered
+    (``name`` picks another state file in the job root, e.g. preview inputs)."""
     d = get_job_dir(job_id)
     if d is None:
         return
-    (d / JOB_STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
+    (d / name).write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def read_job_state(job_id: str) -> dict | None:
+def read_job_state(job_id: str, *, name: str = JOB_STATE_FILE) -> dict | None:
     d = get_job_dir(job_id)
     if d is None:
         return None
     try:
-        data = json.loads((d / JOB_STATE_FILE).read_text(encoding="utf-8"))
+        data = json.loads((d / name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None

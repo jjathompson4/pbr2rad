@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Progressive previews.** Converts and re-renders return a quick draft
+  sphere first (`preview_quality: "draft"`, ~7× cheaper), and the page then
+  asks `POST /api/v1/jobs/{id}/refine` for the full-quality render and swaps
+  it in ("Refining… N s" on the undimmed draft; sliders and Convert stay
+  usable). A refine gives way to any new convert or re-render: the server
+  kills it (`rpict` polled every 0.1 s) and the new job starts at once. If a
+  refine produces no picture the draft stays, labelled "Draft render".
+  Preview PNGs are now written atomically; refines have their own rate-limit
+  bucket. Clients that don't ask for a draft get the full render as before.
+  Assets v=41. See `docs/preview-render-budget.md`.
 - **Render progress indicator.** While a convert or re-render runs (~10–20 s
   on the server), the Radiance sphere dims under a spinner pill with an
   elapsed-seconds counter ("Rendering… 12 s", "Converting…", "Waiting for

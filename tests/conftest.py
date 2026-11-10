@@ -19,3 +19,16 @@ def _isolated_download_cache(tmp_path, monkeypatch):
 
     fetch._USAGE_MEMO.update(root=None, at=0.0, files=[])
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """The API's rate limiters are module-global; start each test clean."""
+    try:
+        from pbr2rad.web import limits
+    except ImportError:          # web extras not installed
+        yield
+        return
+    for limiter in (limits.rate_limit, limits.rate_limit_light, limits.rate_limit_refine):
+        limiter.reset()
+    yield

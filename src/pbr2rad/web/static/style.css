@@ -565,6 +565,9 @@ select, input, textarea {
   white-space: nowrap;
 }
 .render-progress[hidden] { display: none; }
+/* Refining a draft: the draft stays undimmed (it is the picture to judge)
+   and the pill moves down to the bottom of the sphere. */
+#preview-out-fig.refining .render-progress { top: auto; bottom: 2.1rem; transform: translateX(-50%); }
 .spinner,
 .status.busy::before {
   display: inline-block;
