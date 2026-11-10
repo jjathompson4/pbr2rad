@@ -543,6 +543,45 @@ select, input, textarea {
 .preview-badge.draft { cursor: help; outline: none; }
 #preview-out-fig.stale .preview-img { opacity: 0.55; filter: saturate(0.6); }
 
+/* While a convert / re-render runs: the sphere dims and a spinner pill with
+   an elapsed-seconds counter sits on it (badges step aside until the result
+   lands). Centred on the image; the caption below is ~1.6rem. */
+#preview-out-fig.rendering .preview-img { opacity: 0.6; transition: opacity 0.2s; }
+#preview-out-fig.rendering .preview-badge { display: none; }
+.render-progress {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 0.8rem);
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.78);
+  color: #fff;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.render-progress[hidden] { display: none; }
+.spinner,
+.status.busy::before {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.spinner { width: 12px; height: 12px; }
+.status.busy::before { content: ""; margin-right: 0.4em; vertical-align: -0.1em; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .status.busy::before { animation-duration: 3s; }
+}
+
 /* Output panel: fixed height, tabs, pinned Download */
 #output-panel { overflow-y: auto; }   /* last-resort scroll only (see .out-panes) */
 .out-tabs {
