@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+PreviewStatus = Literal["ok", "draft", "timeout", "error", "cancelled", "unavailable"]
+
 
 # ---------------------------------------------------------------------------
 # Request models
@@ -50,6 +52,9 @@ class RerenderRequest(BaseModel):
     # Pass true to drop a stored specularity override (back to the primitive
     # default) — used when the metalness slider flips plastic <-> metal.
     reset_specularity: bool = False
+    # "draft": render a quick draft preview now (the web app then calls
+    # /jobs/{id}/refine for the full one). "full": the full render, as before.
+    preview_quality: Literal["full", "draft"] = "full"
     # Full conversion settings (projection, scales, maps, …) to re-render
     # with; when given they replace the job's stored base options and the
     # material fields above are applied on top.
@@ -84,6 +89,8 @@ class SourceConvertRequest(BaseModel):
     resolution: Literal["1k", "2k"] = "1k"
     fmt: Literal["png", "jpg", "exr"] = "png"
     options: ConvertOptionsRequest = Field(default_factory=ConvertOptionsRequest)
+    # See RerenderRequest.preview_quality.
+    preview_quality: Literal["full", "draft"] = "full"
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +118,12 @@ class ConvertResponse(BaseModel):
     resolution: list[int]
     download_url: str
     preview_url: str | None = None
-    # Why ``preview_url`` is or isn't set: "ok" (full render), "draft" (the
-    # full render ran out of time, a quicker draft render shipped), "timeout"
-    # / "error" (no picture this time; ``preview_error`` says why) or
-    # "unavailable" (no Radiance on this server). On "timeout" / "error" the
-    # material files were still written; only the picture is missing.
-    preview_status: Literal["ok", "draft", "timeout", "error", "unavailable"] = "unavailable"
+    # Why ``preview_url`` is or isn't set: "ok" (full render), "draft" (a
+    # quick draft: asked for with preview_quality="draft", or the full render
+    # ran out of time), "timeout" / "error" / "cancelled" (no picture this
+    # time; ``preview_error`` says why) or "unavailable" (no Radiance on this
+    # server). Without a picture the material files were still written.
+    preview_status: PreviewStatus = "unavailable"
     preview_error: str | None = None
     # Source PBR channels actually consumed during conversion (subset of:
     # "albedo", "normal", "roughness", "metalness"). The UI uses this
@@ -140,6 +147,16 @@ class ConvertResponse(BaseModel):
     avg_srgb_hex: str | None = None
     # Physical size of one texture tile when the source publishes it.
     dimensions_cm: list[float] | None = None
+
+
+class PreviewResponse(BaseModel):
+    """Body of ``POST /jobs/{job_id}/refine``: the job's preview, re-rendered
+    at full quality. Without a new picture (``preview_url`` null) the draft
+    already served stays the job's preview."""
+    job_id: str
+    preview_url: str | None = None
+    preview_status: PreviewStatus = "unavailable"
+    preview_error: str | None = None
 
 
 class HealthResponse(BaseModel):

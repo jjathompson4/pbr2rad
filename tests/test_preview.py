@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -274,6 +275,50 @@ class TestRenderBudget:
         assert res.status == preview.PREVIEW_ERROR and "rpict" in res.detail
         assert not out.exists()
 
+    def test_draft_quality_renders_only_the_draft(self, monkeypatch, tmp_path):
+        """Progressive previews ask for the draft straight away."""
+        calls = self._fake_tools(monkeypatch)
+        out = tmp_path / "preview.png"
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out, roughness=0.3,
+                                     quality=preview.PREVIEW_QUALITY_DRAFT)
+        assert res.status == preview.PREVIEW_DRAFT and out.exists()
+        (cmd, timeout), = calls
+        assert timeout == preview.PREVIEW_DRAFT_TIMEOUT_S
+        assert self._arg(cmd, "-x") == "384" and "-st" not in cmd
+
+    def test_refine_has_no_fallback_and_keeps_the_draft(self, monkeypatch, tmp_path):
+        calls = self._fake_tools(monkeypatch, rpict_timeouts=1)
+        out = tmp_path / "preview.png"
+        out.write_bytes(b"the draft picture")
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out, roughness=0.3,
+                                     draft_fallback=False, keep_on_failure=True)
+        assert res.status == preview.PREVIEW_TIMEOUT and not res.rendered
+        assert len(calls) == 1                                  # no draft attempt
+        assert out.read_bytes() == b"the draft picture"
+
+    def test_png_is_moved_into_place(self, monkeypatch, tmp_path):
+        self._fake_tools(monkeypatch)
+        out = tmp_path / "preview.png"
+        preview.render_preview(tmp_path, tmp_path / "m.rad", out)
+        assert out.exists() and not list(tmp_path.glob("preview.png.tmp"))
+
+    def test_cancelled_render_keeps_the_draft(self, monkeypatch, tmp_path):
+        import threading
+
+        monkeypatch.setattr(preview, "radiance_available", lambda: True)
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "rpict":
+                raise preview.PreviewCancelled("rpict")
+
+        monkeypatch.setattr(preview, "_run", fake_run)
+        out = tmp_path / "preview.png"
+        out.write_bytes(b"the draft picture")
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out, keep_on_failure=True,
+                                     cancel=threading.Event())
+        assert res.status == preview.PREVIEW_CANCELLED and res.detail
+        assert out.read_bytes() == b"the draft picture"
+
     @pytest.mark.skipif(not shutil.which("rpict"), reason="Radiance not installed")
     def test_draft_settings_render_with_real_radiance(self, tmp_path):
         """The draft options are valid rpict options and yield a real sphere."""
@@ -292,6 +337,37 @@ class TestRenderBudget:
         with Image.open(out) as img:
             assert img.size == (384, 384) and img.mode == "RGBA"
             assert img.getpixel((192, 192))[3] == 255                     # the sphere, opaque
+
+
+class TestCancellableRun:
+    """``_run`` with a cancel event: a refine must stop within a moment of a
+    new job arriving, and still honour its timeout and exit codes."""
+
+    def test_cancel_kills_promptly(self):
+        import threading
+        import time
+
+        cancel = threading.Event()
+        threading.Timer(0.2, cancel.set).start()
+        t0 = time.monotonic()
+        with pytest.raises(preview.PreviewCancelled):
+            preview._run(["sleep", "5"], timeout=10, env=dict(os.environ), cancel=cancel)
+        assert time.monotonic() - t0 < 1.5
+
+    def test_timeout_still_applies(self):
+        import threading
+        import time
+
+        t0 = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            preview._run(["sleep", "5"], timeout=0.3, env=dict(os.environ), cancel=threading.Event())
+        assert time.monotonic() - t0 < 1.5
+
+    def test_failure_is_reported(self):
+        import threading
+
+        with pytest.raises(subprocess.CalledProcessError):
+            preview._run(["false"], timeout=5, env=dict(os.environ), cancel=threading.Event())
 
 
 class TestLightRig:

@@ -25,7 +25,7 @@ from ..fetch import FetchError, _cache_root
 from ..pvw import make_preview_png, write_pvw
 from ..sources import SOURCES, TextureSource, get_catalog_fetcher, get_downloader, get_source
 from . import tempdir
-from .limits import rate_limit, rate_limit_light
+from .limits import rate_limit, rate_limit_light, rate_limit_refine
 from .models import (
     ChannelMap,
     ConvertOptionsRequest,
@@ -34,11 +34,15 @@ from .models import (
     DiscoverResponse,
     HealthResponse,
     PolyHavenConvertRequest,
+    PreviewResponse,
     RerenderRequest,
     SourceConvertRequest,
 )
 from .preview import (
+    PREVIEW_QUALITY_DRAFT,
+    PREVIEW_QUALITY_FULL,
     PREVIEW_UNAVAILABLE,
+    REFINE_TIMEOUT_S,
     PreviewResult,
     radiance_available,
     render_preview,
@@ -57,6 +61,17 @@ _BUSY_DETAIL = (
     "Another conversion is already running — this tool processes one at a "
     "time. Try again in a few seconds."
 )
+# Progressive previews: a refine (the full-quality re-render of a preview the
+# user already sees as a draft) is the one job that gives way. While a refine
+# holds _CONVERT_LOCK its cancel event is published here; any convert or
+# re-render that finds the lock taken sets it and waits for the lock instead
+# of answering 503 (the killed refine releases it within ~0.1 s).
+_refine_cancel: threading.Event | None = None
+_refine_cancel_guard = threading.Lock()
+_PREEMPT_WAIT_S = 10.0
+# Per-job preview inputs (paths relative to the job dir, rig, ...) saved after
+# every conversion so /jobs/{id}/refine can re-render without re-converting.
+_PREVIEW_STATE_FILE = "preview.json"
 
 
 # Flat colour behind the (transparent) preview render in the ClimateStudio .pvw.
@@ -347,8 +362,86 @@ async def discover_channels(
     return DiscoverResponse(name=pbr.name, channels=channels, extras=extras)
 
 
-def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
-    """Run the conversion + optional preview render. Blocking; call in a thread."""
+def _preview_inputs(result) -> dict:
+    """Everything ``render_preview`` needs for a conversion result."""
+    src_meta = getattr(result, "source", None) or {}
+    out_dir = Path(result.out_dir)
+    return {
+        "mat_dir": out_dir,
+        # The reference-wrap chain convert_set wrote for us (see
+        # _opts_from_request); falls back to the exported chain if absent.
+        "rad_file": Path(getattr(result, "preview_rad_file", None) or result.rad_file),
+        "output_png": out_dir / "preview.png",
+        "rig": rig_for(result.primitive),     # metals: studio HDRI; others: light rig
+        # per-source reference exposure
+        "source": src_meta.get("source") if isinstance(src_meta, dict) else None,
+        "roughness": result.roughness,        # glossy: sampled specular; rough: folded
+        "pvw_file": getattr(result, "pvw_file", None),
+        "name": result.name,
+    }
+
+
+def _render_job_preview(inputs: dict, **render_kwargs) -> PreviewResult:
+    """Render the preview and, when a picture came out, refresh the .pvw.
+
+    Never raises; on a timeout or failure the response says why
+    (preview_status / preview_error)."""
+    preview = render_preview(
+        inputs["mat_dir"], inputs["rad_file"], inputs["output_png"],
+        rig=inputs["rig"], source=inputs["source"], roughness=inputs["roughness"],
+        **render_kwargs,
+    )
+    # convert_set already wrote a .pvw from the albedo swatch; a real render
+    # of the material is a better thumbnail, so replace it. The render has a
+    # transparent surround — flatten it for ClimateStudio.
+    pvw_file = inputs.get("pvw_file")
+    if preview.rendered and pvw_file is not None:
+        try:
+            write_pvw(
+                pvw_file, inputs["name"],
+                make_preview_png(inputs["output_png"], background=_PVW_BACKGROUND),
+            )
+        except Exception:
+            log.warning("could not refresh %s from render", Path(pvw_file).name, exc_info=True)
+    return preview
+
+
+def _save_preview_inputs(job_id: str, result) -> None:
+    job_dir = tempdir.get_job_dir(job_id)
+    if job_dir is None or getattr(result, "out_dir", None) is None:
+        return
+    try:
+        inputs = _preview_inputs(result)
+        state = {
+            k: (os.path.relpath(v, job_dir) if isinstance(v, Path) else v)
+            for k, v in inputs.items()
+        }
+        tempdir.write_job_state(job_id, state, name=_PREVIEW_STATE_FILE)
+    except Exception:
+        log.warning("could not save preview inputs for job %s", job_id, exc_info=True)
+
+
+def _load_preview_inputs(job_id: str) -> dict | None:
+    job_dir = tempdir.get_job_dir(job_id)
+    state = tempdir.read_job_state(job_id, name=_PREVIEW_STATE_FILE)
+    if job_dir is None or state is None:
+        return None
+    inputs = dict(state)
+    for k in ("mat_dir", "rad_file", "output_png", "pvw_file"):
+        if inputs.get(k) is not None:
+            inputs[k] = job_dir / inputs[k]
+    if not inputs["mat_dir"].is_dir() or not inputs["rad_file"].is_file():
+        return None
+    return inputs
+
+
+def _convert_and_preview(
+    pbr: PBRSet, output_dir: Path, opts: ConvertOptions, *, quality: str = PREVIEW_QUALITY_FULL,
+):
+    """Run the conversion + preview render. Blocking; call in a thread.
+
+    ``quality="draft"`` renders only the quick draft preview (progressive
+    previews; the client refines it with /jobs/{id}/refine)."""
     try:
         result = convert_set(pbr, output_dir, opts)
         write_manifest([result], output_dir)
@@ -363,34 +456,22 @@ def _convert_and_preview(pbr: PBRSet, output_dir: Path, opts: ConvertOptions):
 
     preview = PreviewResult(PREVIEW_UNAVAILABLE)
     if radiance_available():
-        preview_png = output_dir / result.name / "preview.png"
-        # The reference-wrap chain convert_set wrote for us (see
-        # _opts_from_request); falls back to the exported chain if absent.
-        rad_for_preview = getattr(result, "preview_rad_file", None) or result.rad_file
-        src_meta = getattr(result, "source", None) or {}
-        # Never raises; on a timeout or failure no preview.png is left behind
-        # and the response says why (preview_status / preview_error).
-        preview = render_preview(
-            result.out_dir, rad_for_preview, preview_png,
-            rig=rig_for(result.primitive),    # metals: studio HDRI; others: light rig
-            source=src_meta.get("source") if isinstance(src_meta, dict) else None,   # per-source reference exposure
-            roughness=result.roughness,       # glossy: sampled specular; rough: folded
-        )
-        # convert_set already wrote a .pvw from the albedo swatch; a real
-        # render of the material is a better thumbnail, so replace it. The
-        # render has a transparent surround — flatten it for ClimateStudio.
-        if preview.rendered and result.pvw_file is not None:
-            try:
-                write_pvw(
-                    result.pvw_file, result.name,
-                    make_preview_png(preview_png, background=_PVW_BACKGROUND),
-                )
-            except Exception:
-                log.warning(
-                    "could not refresh %s from render", result.pvw_file.name,
-                    exc_info=True,
-                )
+        preview = _render_job_preview(_preview_inputs(result), quality=quality)
     return result, preview
+
+
+async def _acquire_for_job() -> None:
+    """Take the one-job lock for a convert / re-render: right away, or by
+    cancelling a refine that holds it; anything else busy is a 503."""
+    if _CONVERT_LOCK.acquire(blocking=False):
+        return
+    with _refine_cancel_guard:
+        cancel = _refine_cancel
+    if cancel is not None:
+        cancel.set()
+        if await run_in_threadpool(_CONVERT_LOCK.acquire, True, _PREEMPT_WAIT_S):
+            return
+    raise HTTPException(503, _BUSY_DETAIL, headers={"Retry-After": "15"})
 
 
 async def _run_conversion(
@@ -401,10 +482,10 @@ async def _run_conversion(
     The event loop stays free to serve health checks and browsing traffic
     while the conversion grinds on the CPU.
     """
-    if not _CONVERT_LOCK.acquire(blocking=False):
-        raise HTTPException(503, _BUSY_DETAIL, headers={"Retry-After": "15"})
+    await _acquire_for_job()
     try:
         result, preview = await run_in_threadpool(work)
+        _save_preview_inputs(job_id, result)
     finally:
         _CONVERT_LOCK.release()
     return _make_response(job_id, result, preview, source=source, preview_rev=preview_rev)
@@ -416,8 +497,11 @@ async def convert_upload(
     options: str = Form("{}"),
     channels: str = Form(""),
     name: str = Form(""),
+    preview_quality: str = Form(PREVIEW_QUALITY_FULL),
 ):
     """Upload images and convert to Radiance material."""
+    if preview_quality not in (PREVIEW_QUALITY_FULL, PREVIEW_QUALITY_DRAFT):
+        raise HTTPException(400, f"Invalid preview_quality {preview_quality!r}")
     job_id, upload_dir, output_dir = tempdir.new_job()
     await _save_uploads(files, upload_dir)
 
@@ -455,7 +539,7 @@ async def convert_upload(
             "channels": [c.model_dump() for c in channel_list] if channel_list is not None else None,
             "options": opts_req.model_dump(),
         })
-        return _convert_and_preview(pbr, output_dir, opts)
+        return _convert_and_preview(pbr, output_dir, opts, quality=preview_quality)
 
     return await _run_conversion(job_id, work)
 
@@ -473,6 +557,7 @@ async def _convert_from_source(
     resolution: str,
     fmt: str,
     options: ConvertOptionsRequest,
+    preview_quality: str = PREVIEW_QUALITY_FULL,
 ) -> ConvertResponse:
     """Fetch one asset from a registered source and convert it to Radiance."""
     src = _source_or_404(source)
@@ -512,7 +597,7 @@ async def _convert_from_source(
             "channels": None,
             "options": options.model_dump(),
         })
-        return _convert_and_preview(pbr, output_dir, opts)
+        return _convert_and_preview(pbr, output_dir, opts, quality=preview_quality)
 
     return await _run_conversion(job_id, work, source=source)
 
@@ -569,7 +654,7 @@ async def rerender_job(job_id: str, req: RerenderRequest):
         if pbr.albedo is None:
             raise HTTPException(400, "No albedo map found for this job.")
         tempdir.write_job_state(job_id, state)   # successive slider moves compose
-        out = _convert_and_preview(pbr, output_dir, opts)
+        out = _convert_and_preview(pbr, output_dir, opts, quality=req.preview_quality)
         tempdir.touch_job(job_id)
         return out
 
@@ -578,11 +663,51 @@ async def rerender_job(job_id: str, req: RerenderRequest):
     )
 
 
+@router.post("/jobs/{job_id}/refine", response_model=PreviewResponse, dependencies=[Depends(rate_limit_refine)])
+async def refine_job_preview(job_id: str):
+    """Re-render a job's preview at full quality, without re-converting.
+
+    The second half of a progressive preview: the web app converts or
+    re-renders with ``preview_quality: "draft"``, shows that picture, then
+    calls this. A refine gives way to any new convert or re-render (it is
+    cancelled: ``preview_status: "cancelled"``). When it produces no picture
+    the draft stays as the job's preview.
+    """
+    global _refine_cancel
+    inputs = _load_preview_inputs(job_id)
+    if inputs is None:
+        raise HTTPException(404, "Job expired — convert the material again to keep tuning it.")
+    if not radiance_available():
+        return PreviewResponse(job_id=job_id, preview_status=PREVIEW_UNAVAILABLE)
+    if not _CONVERT_LOCK.acquire(blocking=False):
+        raise HTTPException(503, _BUSY_DETAIL, headers={"Retry-After": "15"})
+    cancel = threading.Event()
+    with _refine_cancel_guard:
+        _refine_cancel = cancel
+    try:
+        preview = await run_in_threadpool(
+            lambda: _render_job_preview(
+                inputs, quality=PREVIEW_QUALITY_FULL, draft_fallback=False,
+                keep_on_failure=True, cancel=cancel, full_timeout=REFINE_TIMEOUT_S,
+            )
+        )
+    finally:
+        with _refine_cancel_guard:
+            _refine_cancel = None
+        _CONVERT_LOCK.release()
+    tempdir.touch_job(job_id)
+    url = f"/api/v1/preview/{job_id}?r={int(time.time() * 1000)}" if preview.rendered else None
+    return PreviewResponse(
+        job_id=job_id, preview_url=url, preview_status=preview.status,
+        preview_error=None if preview.rendered else preview.detail,
+    )
+
+
 @router.post("/sources/{source}/convert", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
 async def source_convert(source: str, req: SourceConvertRequest):
     """Fetch an asset from a texture source (Poly Haven, ambientCG) and convert it."""
     return await _convert_from_source(
-        source, req.asset_id, req.resolution, req.fmt, req.options,
+        source, req.asset_id, req.resolution, req.fmt, req.options, req.preview_quality,
     )
 
 

@@ -330,6 +330,131 @@ def test_rerender_reports_preview_status(client, albedo_png, status, has_url):
         assert data["preview_error"]
 
 
+# ---------------------------------------------------------------------------
+# Progressive previews: draft with the convert / re-render, then refine
+# ---------------------------------------------------------------------------
+
+def _upload(client, albedo_png, **data):
+    return client.post(
+        "/api/v1/convert/upload",
+        files=[("files", (albedo_png.name, open(albedo_png, "rb"), "image/png"))],
+        data={"options": "{}", "name": "m", **data},
+    )
+
+
+def test_progressive_draft_then_refine(client, albedo_png):
+    import threading
+
+    from pbr2rad.web import api
+    from pbr2rad.web import preview as pv
+
+    seen = []
+
+    def fake_render(mat_dir, rad_file, output_png, **kwargs):
+        seen.append(kwargs)
+        Image.new("RGB", (384, 384), (9, 9, 9)).save(output_png)
+        return PreviewResult(pv.PREVIEW_DRAFT if kwargs.get("quality") == "draft" else PREVIEW_OK)
+
+    with mock.patch.object(api, "radiance_available", return_value=True), \
+            mock.patch.object(api, "render_preview", side_effect=fake_render):
+        resp = _upload(client, albedo_png, preview_quality="draft")
+        assert resp.status_code == 200
+        data = resp.json()
+        job = data["job_id"]
+        assert data["preview_status"] == "draft" and data["preview_url"]
+        assert seen[-1]["quality"] == "draft"
+
+        resp = client.post(f"/api/v1/jobs/{job}/refine")
+        assert resp.status_code == 200
+        ref = resp.json()
+        assert ref["preview_status"] == "ok" and ref["preview_error"] is None
+        assert ref["preview_url"].startswith(f"/api/v1/preview/{job}?r=")
+        kw = seen[-1]
+        assert kw["quality"] == "full" and kw["draft_fallback"] is False
+        assert kw["keep_on_failure"] is True and isinstance(kw["cancel"], threading.Event)
+        assert kw["full_timeout"] == pv.REFINE_TIMEOUT_S
+
+        resp = client.post(f"/api/v1/jobs/{job}/rerender", json={"diffuse_scale": 0.9, "preview_quality": "draft"})
+        assert resp.json()["preview_status"] == "draft" and seen[-1]["quality"] == "draft"
+
+        # Old clients send no preview_quality: the full render, as before.
+        resp = client.post(f"/api/v1/jobs/{job}/rerender", json={"diffuse_scale": 0.8})
+        assert resp.json()["preview_status"] == "ok" and seen[-1]["quality"] == "full"
+
+
+def test_refine_without_a_picture_keeps_the_draft(client, albedo_png):
+    from pbr2rad.web import api
+
+    def fake_render(mat_dir, rad_file, output_png, **kwargs):
+        if kwargs.get("quality") == "draft":
+            Image.new("RGB", (384, 384), (9, 9, 9)).save(output_png)
+            return PreviewResult("draft")
+        return PreviewResult("timeout", "The preview render ran out of time.")
+
+    with mock.patch.object(api, "radiance_available", return_value=True), \
+            mock.patch.object(api, "render_preview", side_effect=fake_render):
+        job = _upload(client, albedo_png, preview_quality="draft").json()["job_id"]
+        ref = client.post(f"/api/v1/jobs/{job}/refine").json()
+    assert ref["preview_status"] == "timeout" and ref["preview_url"] is None and ref["preview_error"]
+    assert client.get(f"/api/v1/preview/{job}").status_code == 200        # the draft is still served
+
+
+def test_refine_unknown_job(client):
+    assert client.post("/api/v1/jobs/nonexistent/refine").status_code == 404
+
+
+def test_upload_rejects_unknown_preview_quality(client, albedo_png):
+    assert _upload(client, albedo_png, preview_quality="ultra").status_code == 400
+
+
+def test_new_job_preempts_a_refine_but_not_a_conversion():
+    """A convert / re-render that finds a refine holding the one-job lock
+    cancels it and takes the lock; any other holder still means 503."""
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    from pbr2rad.web import api
+
+    assert api._CONVERT_LOCK.acquire(blocking=False)
+    cancel = threading.Event()
+    api._refine_cancel = cancel
+
+    def refine_gives_way():
+        cancel.wait(5)
+        api._refine_cancel = None
+        api._CONVERT_LOCK.release()
+
+    threading.Thread(target=refine_gives_way).start()
+    try:
+        asyncio.run(api._acquire_for_job())
+        assert cancel.is_set()
+    finally:
+        api._CONVERT_LOCK.release()
+
+    assert api._CONVERT_LOCK.acquire(blocking=False)       # a conversion holds it
+    try:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(api._acquire_for_job())
+        assert exc.value.status_code == 503
+    finally:
+        api._CONVERT_LOCK.release()
+
+
+@pytest.mark.skipif(not __import__("shutil").which("rpict"), reason="Radiance not installed")
+def test_progressive_preview_with_real_radiance(client, albedo_png):
+    data = _upload(client, albedo_png, preview_quality="draft").json()
+    assert data["preview_status"] == "draft"
+    job = data["job_id"]
+    ref = client.post(f"/api/v1/jobs/{job}/refine").json()
+    assert ref["preview_status"] == "ok", ref
+    assert client.get(ref["preview_url"]).status_code == 200
+    names = zipfile.ZipFile(BytesIO(client.get(f"/api/v1/download/{job}").content)).namelist()
+    assert any(n.endswith("/preview.png") for n in names)
+    assert not [n for n in names if n.endswith(".tmp")]
+
+
 def test_download_invalid_job(client):
     resp = client.get("/api/v1/download/nonexistent")
     assert resp.status_code == 404

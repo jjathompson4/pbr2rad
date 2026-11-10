@@ -64,7 +64,13 @@ function errMessage(err) {
 // change made meanwhile is queued and re-renders once it lands. Every request
 // takes a new generation number and its response is applied only if it is
 // still the latest, so a slow answer can never overwrite a newer result.
+//
+// Previews are progressive: each convert / re-render asks the server for a
+// quick draft picture (a few seconds), shows it, then asks for the
+// full-quality one (/refine). The refine locks nothing: a new slider move or
+// conversion abandons it here, and the server cancels it for the new job.
 let inFlight = null;           // null | "convert" | "rerender"
+let refine = null;             // { controller } while the full preview renders
 let requestGen = 0;
 let rerenderQueued = false;
 let uploadReady = false;       // channels discovered for the current upload
@@ -72,17 +78,19 @@ let uploadReady = false;       // channels discovered for the current upload
 function setInFlight(kind) {
   inFlight = kind;
   document.getElementById("tune-panel").classList.toggle("busy", !!kind);
-  document.getElementById("status").classList.toggle("busy", !!kind);
   syncConvertButtons();
-  setRenderProgress(kind);
+  syncProgress();
 }
 
-// A convert or re-render takes ~10-20 s on the server, so while one runs the
-// Radiance sphere gets a spinner and an elapsed-seconds counter (and the
-// status line a spinner): the page should never look frozen. The overlay is
-// built here, not in index.html, so an older cached page still gets it.
+// A convert or re-render takes several seconds on the server, so while one
+// runs the Radiance sphere gets a spinner and an elapsed-seconds counter (and
+// the status line a spinner): the page should never look frozen. While the
+// draft is being refined the same pill sits low on the sphere, which stays
+// undimmed so the draft can be judged. The overlay is built here, not in
+// index.html, so an older cached page still gets it.
 let progressTimer = null;
 let progressLabel = "";
+let progressShown = null;
 
 function progressEl() {
   let el = document.getElementById("render-progress");
@@ -98,14 +106,20 @@ function progressEl() {
   return el;
 }
 
-function setRenderProgress(kind) {
+function syncProgress() {
+  const kind = inFlight || (refine ? "refine" : null);
+  document.getElementById("status").classList.toggle("busy", !!kind);
+  if (kind === progressShown) return;
+  progressShown = kind;
   const el = progressEl();
   clearInterval(progressTimer);
   progressTimer = null;
-  document.getElementById("preview-out-fig").classList.toggle("rendering", !!kind);
+  const fig = document.getElementById("preview-out-fig");
+  fig.classList.toggle("rendering", kind === "convert" || kind === "rerender");
+  fig.classList.toggle("refining", kind === "refine");
   el.hidden = !kind;
   if (!kind) return;
-  progressLabel = kind === "convert" ? "Converting" : "Rendering";
+  progressLabel = { convert: "Converting", rerender: "Rendering", refine: "Refining" }[kind];
   const text = el.querySelector(".render-progress-text");
   const t0 = performance.now();
   const tick = () => {
@@ -153,24 +167,95 @@ async function runConvert(busyText, request, refItem) {
   if (inFlight) return;
   clearTimeout(rerenderTimer);   // a pending slider re-render belonged to the old job
   rerenderQueued = false;
+  cancelRefine();
   const gen = ++requestGen;
   setInFlight("convert");
   setStatus(busyText);
+  let refineJob = null;
   try {
     const resp = await postWithRetry(request, busyText);
     if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
     if (gen !== requestGen) return;
-    showResult(data, refItem);
+    refineJob = wantsRefine(data) ? data.job_id : null;
+    showResult(data, refItem, { refining: !!refineJob });
   } catch (err) {
     if (gen !== requestGen) return;
     setStatus("Error: " + errMessage(err), "error");
   } finally {
-    if (gen === requestGen) {
-      setInFlight(null);
-      flushQueuedRerender();
-    }
+    if (gen === requestGen) settle(refineJob, false);
   }
+}
+
+// After a convert / re-render lands: refine its draft (unless a newer change
+// is already queued, which brings its own draft), then unlock.
+function settle(refineJob, rerendered) {
+  if (refineJob && !rerenderQueued) startRefine(refineJob, rerendered);
+  setInFlight(null);
+  flushQueuedRerender();
+}
+
+// A draft picture we asked for. (A server that predates progressive previews
+// answers "ok" with the full render, and there is nothing to refine.)
+function wantsRefine(data) {
+  return data.preview_status === "draft" && !!data.preview_url;
+}
+
+function cancelRefine() {
+  if (!refine) return;
+  refine.controller.abort();     // the server cancels it when the next job arrives
+  refine = null;
+  syncProgress();
+}
+
+// Ask the server for the full-quality preview of `jobId` and swap it in over
+// the draft once it has loaded. Without one (timeout, error, cancelled by
+// another visitor's job) the draft stays, labelled as a draft.
+function startRefine(jobId, rerendered) {
+  const me = { controller: new AbortController() };
+  refine = me;
+  syncProgress();
+  const timer = setTimeout(() => me.controller.abort(), CONVERT_TIMEOUT_MS);
+  (async () => {
+    let data = null;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const resp = await fetch(`/api/v1/jobs/${jobId}/refine`, { method: "POST", signal: me.controller.signal });
+        if (resp.status === 503 && attempt < BUSY_RETRIES) {
+          const retry = Math.min(BUSY_WAIT_MAX_S, parseInt(resp.headers.get("Retry-After") || "5", 10) || 5);
+          await new Promise(r => setTimeout(r, retry * 1000));
+          if (refine !== me) return;
+          continue;
+        }
+        if (resp.ok) data = await resp.json();
+        break;
+      }
+      if (data && data.preview_url) {
+        await new Promise(r => {
+          const img = new Image();
+          img.onload = img.onerror = r;
+          img.src = data.preview_url;
+        });
+      }
+    } catch (err) {
+      /* abandoned for a newer request, or the network failed: keep the draft */
+    } finally {
+      clearTimeout(timer);
+    }
+    if (refine !== me) return;
+    refine = null;
+    const done = rerendered ? "Re-rendered with overrides." : "Conversion complete!";
+    if (data && data.preview_url) {
+      document.getElementById("preview-img").src = data.preview_url;
+      if (currentJob) Object.assign(currentJob.data, { preview_url: data.preview_url, preview_status: data.preview_status });
+      setPreviewBadge(null);
+      setStatus(done, "success");
+    } else {
+      setPreviewBadge("draft", data || {});
+      setStatus(done + " Preview is a quick draft.", "success");
+    }
+    syncProgress();
+  })();
 }
 
 function flushQueuedRerender() {
@@ -349,6 +434,7 @@ document.getElementById("convert-btn").addEventListener("click", async () => {
   form.append("channels", JSON.stringify(channels));
   form.append("options", JSON.stringify(getOptions({ fresh: true })));
   form.append("name", document.getElementById("material-name").value || "material");
+  form.append("preview_quality", "draft");   // progressive: draft now, then /refine
 
   await runConvert(
     "Converting...",
@@ -666,6 +752,7 @@ document.getElementById("ph-convert-btn").addEventListener("click", async () => 
     resolution: selectedRes,
     fmt: selectedFmt,
     options: getOptions({ fresh: true }),
+    preview_quality: "draft",   // progressive: draft now, then /refine
   });
   await runConvert(
     `Fetching from ${SOURCES[source].label} and converting...`,
@@ -716,7 +803,7 @@ function getOptions({ fresh = false } = {}) {
 function setStatus(msg, type = "") {
   const el = document.getElementById("status");
   el.textContent = msg;
-  el.className = "status " + type + (inFlight ? " busy" : "");
+  el.className = "status " + type + (inFlight || refine ? " busy" : "");
 }
 
 // The last conversion (for the tune sliders) and the catalog item it came
@@ -762,7 +849,7 @@ function setPreviewBadge(kind, data) {
     badge.removeAttribute("tabindex");
   } else if (kind === "draft") {
     badge.innerHTML = "<strong>Draft render</strong>";
-    badge.dataset.tip = "The full-quality render ran out of time, so this is a quicker draft: a little grainier, same material. The download is complete either way.";
+    badge.dataset.tip = "A quick draft render; the full-quality one didn't finish. It is a little grainier, and dark glossy finishes look slightly greyer than they really are. The material files are complete either way.";
     badge.tabIndex = 0;
   }
   badge.hidden = !kind;
@@ -794,8 +881,11 @@ function showResult(data, refItem, opts = {}) {
   previewImg.classList.toggle("visible", showPreview);
   cap.style.display = showPreview ? "block" : "none";
   pair.classList.toggle("has-preview", showPreview);
-  setPreviewBadge(stale ? "stale" : (showPreview && data.preview_status === "draft" ? "draft" : null), data);
-  const [statusText, statusType] = resultStatus(data, !!opts.keepSliders, stale);
+  const draftBadge = showPreview && data.preview_status === "draft" && !opts.refining;
+  setPreviewBadge(stale ? "stale" : (draftBadge ? "draft" : null), data);
+  const [statusText, statusType] = opts.refining
+    ? [(opts.keepSliders ? "Re-rendered." : "Converted.") + " Refining the preview…", ""]
+    : resultStatus(data, !!opts.keepSliders, stale);
   setStatus(statusText, statusType);
 
   const refFig = document.getElementById("preview-ref-fig");
@@ -967,6 +1057,7 @@ function scheduleRerender() {
 async function rerender() {
   if (!currentJob) return;
   if (inFlight) { rerenderQueued = true; return; }
+  cancelRefine();
   const jobId = currentJob.id;
   const gen = ++requestGen;
   setInFlight("rerender");
@@ -977,9 +1068,11 @@ async function rerender() {
     metalness: sliderVal("tune-metal"),
     roughness: sliderVal("tune-rough"),
     diffuse_scale: sliderVal("tune-diff"),
+    preview_quality: "draft",  // progressive: draft now, then /refine
   };
   if (specTouched) body.specularity = sliderVal("tune-spec");
   else body.reset_specularity = true;     // follow the primitive default
+  let refineJob = null;
   try {
     const resp = await postWithRetry(signal => fetch(`/api/v1/jobs/${jobId}/rerender`, {
       method: "POST",
@@ -990,15 +1083,13 @@ async function rerender() {
     if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
     if (gen !== requestGen) return;
-    showResult(data, undefined, { keepSliders: true });
+    refineJob = wantsRefine(data) ? data.job_id : null;
+    showResult(data, undefined, { keepSliders: true, refining: !!refineJob });
   } catch (err) {
     if (gen !== requestGen) return;
     setStatus("Re-render failed: " + errMessage(err), "error");
   } finally {
-    if (gen === requestGen) {
-      setInFlight(null);
-      flushQueuedRerender();
-    }
+    if (gen === requestGen) settle(refineJob, true);
   }
 }
 

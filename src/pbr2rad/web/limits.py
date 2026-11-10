@@ -68,4 +68,7 @@ def _make_limiter(max_requests: int):
 
 
 rate_limit = _make_limiter(20)         # conversions / uploads
+# Preview refines follow every progressive convert / re-render one-for-one;
+# their own bucket keeps the 20 changes a minute the sliders had before.
+rate_limit_refine = _make_limiter(20)
 rate_limit_light = _make_limiter(60)   # search / info / download / preview
