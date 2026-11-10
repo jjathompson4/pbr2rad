@@ -39,6 +39,88 @@ function errMessage(err) {
 }
 
 // ---------------------------------------------------------------------------
+// One heavy request at a time
+// ---------------------------------------------------------------------------
+
+// The server converts one job at a time for every visitor, so this page runs
+// at most one convert or re-render at once. While one is in flight the
+// Convert buttons and the override sliders are locked; a Maps & Projection
+// change made meanwhile is queued and re-renders once it lands. Every request
+// takes a new generation number and its response is applied only if it is
+// still the latest, so a slow answer can never overwrite a newer result.
+let inFlight = null;           // null | "convert" | "rerender"
+let requestGen = 0;
+let rerenderQueued = false;
+let uploadReady = false;       // channels discovered for the current upload
+
+function setInFlight(kind) {
+  inFlight = kind;
+  document.getElementById("tune-panel").classList.toggle("busy", !!kind);
+  syncConvertButtons();
+}
+
+function syncConvertButtons() {
+  const wait = inFlight ? "Waiting for the current render to finish" : null;
+  const buttons = [
+    [document.getElementById("ph-convert-btn"), true],
+    [document.getElementById("convert-btn"), uploadReady],
+  ];
+  for (const [btn, ready] of buttons) {
+    btn.disabled = !!inFlight || !ready;
+    if (wait) btn.title = wait; else btn.removeAttribute("title");
+  }
+}
+
+// Busy answers (503) come from anyone's job, not just ours: honour the
+// server's Retry-After (capped) a few times before giving up.
+const BUSY_RETRIES = 3;
+const BUSY_WAIT_MAX_S = 30;
+
+async function postWithRetry(request, busyText) {
+  for (let attempt = 0; ; attempt++) {
+    const resp = await request(AbortSignal.timeout(CONVERT_TIMEOUT_MS));
+    if (resp.status !== 503 || attempt >= BUSY_RETRIES) return resp;
+    const retry = Math.min(BUSY_WAIT_MAX_S, parseInt(resp.headers.get("Retry-After") || "5", 10) || 5);
+    setStatus(`Server busy, retrying in ${retry}s…`);
+    await new Promise(r => setTimeout(r, retry * 1000));
+    setStatus(busyText);
+  }
+}
+
+// Run one convert request (catalog or upload) and show its result next to
+// `refItem`, the catalog entry it was made from (pinned at click time).
+async function runConvert(busyText, request, refItem) {
+  if (inFlight) return;
+  clearTimeout(rerenderTimer);   // a pending slider re-render belonged to the old job
+  rerenderQueued = false;
+  const gen = ++requestGen;
+  setInFlight("convert");
+  setStatus(busyText);
+  try {
+    const resp = await postWithRetry(request, busyText);
+    if (!resp.ok) throw new Error(await apiError(resp));
+    const data = await resp.json();
+    if (gen !== requestGen) return;
+    showResult(data, refItem);
+  } catch (err) {
+    if (gen !== requestGen) return;
+    setStatus("Error: " + errMessage(err), "error");
+  } finally {
+    if (gen === requestGen) {
+      setInFlight(null);
+      flushQueuedRerender();
+    }
+  }
+}
+
+function flushQueuedRerender() {
+  if (rerenderQueued && currentJob) {
+    rerenderQueued = false;
+    scheduleRerender();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
 
@@ -143,6 +225,8 @@ fileInput.addEventListener("change", e => handleFiles(e.target.files));
 
 async function handleFiles(fileList) {
   uploadedFiles = Array.from(fileList);
+  uploadReady = false;
+  syncConvertButtons();
   if (!uploadedFiles.length) return;
 
   setStatus("Detecting channels...");
@@ -168,7 +252,8 @@ async function handleFiles(fileList) {
       tbody.appendChild(tr);
     });
     document.getElementById("channel-table").style.display = "table";
-    document.getElementById("convert-btn").disabled = false;
+    uploadReady = true;
+    syncConvertButtons();
 
     if (!document.getElementById("material-name").value) {
       document.getElementById("material-name").value = data.name;
@@ -185,9 +270,7 @@ async function handleFiles(fileList) {
 // ---------------------------------------------------------------------------
 
 document.getElementById("convert-btn").addEventListener("click", async () => {
-  if (!uploadedFiles.length) return;
-  setStatus("Converting...");
-  document.getElementById("convert-btn").disabled = true;
+  if (!uploadedFiles.length || inFlight) return;
 
   const form = new FormData();
   uploadedFiles.forEach(f => form.append("files", f));
@@ -204,22 +287,14 @@ document.getElementById("convert-btn").addEventListener("click", async () => {
   });
 
   form.append("channels", JSON.stringify(channels));
-  form.append("options", JSON.stringify(getOptions()));
+  form.append("options", JSON.stringify(getOptions({ fresh: true })));
   form.append("name", document.getElementById("material-name").value || "material");
 
-  try {
-    const resp = await fetch("/api/v1/convert/upload", {
-      method: "POST", body: form,
-      signal: AbortSignal.timeout(CONVERT_TIMEOUT_MS),
-    });
-    if (!resp.ok) throw new Error(await apiError(resp));
-    const data = await resp.json();
-    showResult(data, null);
-  } catch (err) {
-    setStatus("Error: " + errMessage(err), "error");
-  } finally {
-    document.getElementById("convert-btn").disabled = false;
-  }
+  await runConvert(
+    "Converting...",
+    signal => fetch("/api/v1/convert/upload", { method: "POST", body: form, signal }),
+    null,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -382,6 +457,9 @@ async function selectAsset(item, el) {
   selectedAssetId = id;
   selectedItem = item;
   const source = selectedSource;
+  if (inFlight === "rerender") {
+    setStatus("Re-rendering… Fetch & Convert unlocks when it finishes.");
+  }
 
   // Highlight
   document.querySelectorAll(".ph-item").forEach(x => x.classList.remove("selected"));
@@ -518,39 +596,39 @@ function updateMapUsage() {
 document.getElementById("opt-normal").addEventListener("change", updateMapUsage);
 
 document.getElementById("ph-convert-btn").addEventListener("click", async () => {
-  if (!selectedAssetId) return;
+  if (!selectedAssetId || inFlight) return;
+  // Pin what is being converted: the user may pick another tile while this
+  // runs, and the result must sit next to ITS reference render.
+  const item = selectedItem;
   const source = selectedSource;
-  setStatus(`Fetching from ${SOURCES[source].label} and converting...`);
-  document.getElementById("ph-convert-btn").disabled = true;
-
-  try {
-    const resp = await fetch(`/api/v1/sources/${source}/convert`, {
+  const body = JSON.stringify({
+    asset_id: selectedAssetId,
+    resolution: selectedRes,
+    fmt: selectedFmt,
+    options: getOptions({ fresh: true }),
+  });
+  await runConvert(
+    `Fetching from ${SOURCES[source].label} and converting...`,
+    signal => fetch(`/api/v1/sources/${source}/convert`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(CONVERT_TIMEOUT_MS),
-      body: JSON.stringify({
-        asset_id: selectedAssetId,
-        resolution: selectedRes,
-        fmt: selectedFmt,
-        options: getOptions(),
-      }),
-    });
-
-    if (!resp.ok) throw new Error(await apiError(resp));
-    const data = await resp.json();
-    showResult(data, selectedItem);
-  } catch (err) {
-    setStatus("Error: " + errMessage(err), "error");
-  } finally {
-    document.getElementById("ph-convert-btn").disabled = false;
-  }
+      signal,
+      body,
+    }),
+    item,
+  );
 });
 
 // ---------------------------------------------------------------------------
 // Options helper
 // ---------------------------------------------------------------------------
 
-function getOptions() {
+// `fresh`: the options for a new conversion rather than a re-render of the
+// current job. Bump is a per-job override like the other sliders: a new
+// conversion starts at x1 (what Reset to maps gives), and x1 is also sent
+// while the slider is disabled (normal map off, or the material has none).
+function getOptions({ fresh = false } = {}) {
+  const bumpOn = !fresh && !document.getElementById("tune-bump").disabled;
   const opts = {
     projection: document.getElementById("opt-projection").value,
     planar_axis: document.getElementById("opt-planar-axis").value,
@@ -559,7 +637,7 @@ function getOptions() {
     u_offset: parseFloat(document.getElementById("opt-u-offset").value) || 0,
     v_offset: parseFloat(document.getElementById("opt-v-offset").value) || 0,
     normal: document.getElementById("opt-normal").checked,
-    bump_scale: sliderVal("tune-bump"),   // Bump slider, Override Properties tab
+    bump_scale: bumpOn ? sliderVal("tune-bump") : 1.0,   // Bump slider, Override Properties tab
     varying_roughness: document.getElementById("opt-varying-rough").checked,
     rotate_per_map: { ...phRotatePerMap },
     flip_h: document.getElementById("opt-flip-h").checked,
@@ -591,29 +669,71 @@ function visible(rgb) { return PHOTOPIC[0] * rgb[0] + PHOTOPIC[1] * rgb[1] + PHO
 function pct(v) { return (v * 100).toFixed(1).replace(/\.0$/, "") + "%"; }
 function fmt3(v) { return Number(v).toFixed(3); }
 
+// Status line for a finished request, from what the server says about the
+// preview (preview_status): a draft or a missing picture is said out loud.
+function resultStatus(data, rerendered, stale) {
+  const done = rerendered ? "Re-rendered with overrides." : "Conversion complete!";
+  const st = data.preview_status;
+  if (st === "draft") return [done + " Preview is a quick draft.", "success"];
+  if (st !== "timeout" && st !== "error") return [done, "success"];
+  const why = st === "timeout" ? "timed out" : "failed";
+  if (stale) return [`Material updated, but the preview ${why}. The sphere shows the previous settings.`, "warning"];
+  return [`${rerendered ? "Material updated" : "Converted"}, but the preview ${why}. The material files are ready.`, "warning"];
+}
+
+// Badge over the Radiance sphere: "stale" (a re-render made no new picture,
+// the previous one is still showing), "draft", or none.
+function setPreviewBadge(kind, data) {
+  const badge = document.getElementById("preview-badge");
+  const fig = document.getElementById("preview-out-fig");
+  fig.classList.toggle("stale", kind === "stale");
+  badge.className = "preview-badge" + (kind ? " " + kind : "");
+  if (kind === "stale") {
+    const why = data.preview_status === "timeout" ? "Re-render timed out." : "Re-render failed.";
+    badge.innerHTML = `<strong>Preview out of date</strong><span>${why} Material files were updated.</span>`;
+    badge.removeAttribute("data-tip");
+    badge.removeAttribute("tabindex");
+  } else if (kind === "draft") {
+    badge.innerHTML = "<strong>Draft render</strong>";
+    badge.dataset.tip = "The full-quality render ran out of time, so this is a quicker draft: a little grainier, same material. The download is complete either way.";
+    badge.tabIndex = 0;
+  }
+  badge.hidden = !kind;
+}
+
 function showResult(data, refItem, opts = {}) {
-  setStatus(opts.statusText || "Conversion complete!", "success");
   const base = currentJob && currentJob.base;
-  currentJob = { id: data.job_id, data, base };
+  // channels_used drops "normal" while the normal map is switched off, so
+  // whether the material HAS one is remembered across the job's re-renders.
+  const usesNormal = (data.channels_used || []).includes("normal");
+  const hadNormal = !!(opts.keepSliders && currentJob && currentJob.hasNormal);
+  currentJob = { id: data.job_id, data, base, hasNormal: usesNormal || hadNormal };
   if (refItem !== undefined) currentRefItem = refItem;
 
-  // Preview (+ reference render when the material came from the Browse panel)
+  // Preview (+ reference render when the material came from the Browse
+  // panel). A re-render that produced no new picture keeps the previous one,
+  // flagged as out of date; a new job without a picture shows none, since
+  // the previous picture is a different material.
   const previewImg = document.getElementById("preview-img");
   const cap = document.getElementById("preview-cap");
   const pair = document.getElementById("preview-pair");
+  let showPreview = false, stale = false;
   if (data.preview_url) {
     previewImg.src = data.preview_url;
-    previewImg.classList.add("visible");
-    cap.style.display = "block";
-    pair.classList.add("has-preview");
-  } else {
-    previewImg.classList.remove("visible");
-    cap.style.display = "none";
-    pair.classList.remove("has-preview");
+    showPreview = true;
+  } else if (opts.keepSliders && previewImg.classList.contains("visible")) {
+    showPreview = stale = true;
   }
+  previewImg.classList.toggle("visible", showPreview);
+  cap.style.display = showPreview ? "block" : "none";
+  pair.classList.toggle("has-preview", showPreview);
+  setPreviewBadge(stale ? "stale" : (showPreview && data.preview_status === "draft" ? "draft" : null), data);
+  const [statusText, statusType] = resultStatus(data, !!opts.keepSliders, stale);
+  setStatus(statusText, statusType);
+
   const refFig = document.getElementById("preview-ref-fig");
   const refImg = document.getElementById("preview-ref-img");
-  if (currentRefItem && heroFor(currentRefItem) && data.preview_url) {
+  if (currentRefItem && heroFor(currentRefItem) && showPreview) {
     refImg.src = heroFor(currentRefItem);
     const label = (SOURCES[data.source] && SOURCES[data.source].label) || "Source";
     document.getElementById("preview-ref-cap").textContent = label + " render";
@@ -662,22 +782,25 @@ function showResult(data, refItem, opts = {}) {
   // Override Properties tab — sliders reflect the effective values of this render
   const spec = data.specularity != null ? data.specularity : 0.05;
   if (!opts.keepSliders) {
+    // A new job starts from the values read from its maps, bump x1: the
+    // same state Reset to maps gives (nothing carries over silently).
     setSlider("tune-metal", data.metalness);
     setSlider("tune-spec", spec);
     setSlider("tune-rough", data.roughness);
     setSlider("tune-diff", data.diffuse_scale != null ? data.diffuse_scale : 1.0);
+    setSlider("tune-bump", 1.0);
     specTouched = false;
     currentJob.base = { roughness: data.roughness, metalness: data.metalness };
-  } else {
+  } else if (!rerenderQueued) {
     // Server re-seeds specularity when the primitive flips; follow it unless
-    // the user has taken over the slider.
+    // the user has taken over the slider. (Skipped when a newer change is
+    // queued: these values are already older than the sliders.)
     if (!specTouched) setSlider("tune-spec", spec);
     if (data.metalness != null) setSlider("tune-metal", data.metalness);
   }
   updateDerived(data);
   const tune = document.getElementById("tune-panel");
   tune.style.display = "block";
-  tune.classList.remove("busy");
   document.getElementById("tune-empty").style.display = "none";
   document.getElementById("tune-note").style.display = "block";
 
@@ -728,7 +851,7 @@ function updateDerived(data) {
 // Bump is a conversion option (texdata scale): enabled only while the normal
 // map is in use and the material actually has one.
 function syncBumpEnabled() {
-  const hasNormal = !currentJob || (currentJob.data.channels_used || []).includes("normal");
+  const hasNormal = !currentJob || currentJob.hasNormal;
   const on = document.getElementById("opt-normal").checked && hasNormal;
   const input = document.getElementById("tune-bump");
   input.disabled = !on;
@@ -765,14 +888,23 @@ document.getElementById("tune-reset").addEventListener("click", () => {
 let rerenderTimer = null;
 function scheduleRerender() {
   clearTimeout(rerenderTimer);
+  if (inFlight) {
+    // Coalesce: one follow-up re-render with the latest values once the
+    // current request lands (see runConvert / rerender).
+    rerenderQueued = true;
+    return;
+  }
   rerenderTimer = setTimeout(rerender, 300);
 }
 
 async function rerender() {
   if (!currentJob) return;
-  const tune = document.getElementById("tune-panel");
-  tune.classList.add("busy");
-  setStatus("Re-rendering with your overrides…");
+  if (inFlight) { rerenderQueued = true; return; }
+  const jobId = currentJob.id;
+  const gen = ++requestGen;
+  setInFlight("rerender");
+  const busyText = "Re-rendering with your overrides…";
+  setStatus(busyText);
   const body = {
     options: getOptions(),     // projection / maps / rotations as currently set
     metalness: sliderVal("tune-metal"),
@@ -781,28 +913,25 @@ async function rerender() {
   };
   if (specTouched) body.specularity = sliderVal("tune-spec");
   else body.reset_specularity = true;     // follow the primitive default
-  const post = () => fetch(`/api/v1/jobs/${currentJob.id}/rerender`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(CONVERT_TIMEOUT_MS),
-    body: JSON.stringify(body),
-  });
   try {
-    let resp = await post();
-    if (resp.status === 503) {
-      // One conversion at a time on the server; a slider move that lands
-      // while the previous re-render is still running just waits its turn.
-      const retry = parseInt(resp.headers.get("Retry-After") || "5", 10);
-      setStatus(`Server busy — retrying in ${retry}s…`);
-      await new Promise(r => setTimeout(r, retry * 1000));
-      resp = await post();
-    }
+    const resp = await postWithRetry(signal => fetch(`/api/v1/jobs/${jobId}/rerender`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+      body: JSON.stringify(body),
+    }), busyText);
     if (!resp.ok) throw new Error(await apiError(resp));
     const data = await resp.json();
-    showResult(data, undefined, { keepSliders: true, statusText: "Re-rendered with overrides." });
+    if (gen !== requestGen) return;
+    showResult(data, undefined, { keepSliders: true });
   } catch (err) {
-    tune.classList.remove("busy");
+    if (gen !== requestGen) return;
     setStatus("Re-render failed: " + errMessage(err), "error");
+  } finally {
+    if (gen === requestGen) {
+      setInFlight(null);
+      flushQueuedRerender();
+    }
   }
 }
 

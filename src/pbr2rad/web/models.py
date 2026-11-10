@@ -111,6 +111,13 @@ class ConvertResponse(BaseModel):
     resolution: list[int]
     download_url: str
     preview_url: str | None = None
+    # Why ``preview_url`` is or isn't set: "ok" (full render), "draft" (the
+    # full render ran out of time, a quicker draft render shipped), "timeout"
+    # / "error" (no picture this time; ``preview_error`` says why) or
+    # "unavailable" (no Radiance on this server). On "timeout" / "error" the
+    # material files were still written; only the picture is missing.
+    preview_status: Literal["ok", "draft", "timeout", "error", "unavailable"] = "unavailable"
+    preview_error: str | None = None
     # Source PBR channels actually consumed during conversion (subset of:
     # "albedo", "normal", "roughness", "metalness"). The UI uses this
     # to indicate which input maps fed the Radiance material.

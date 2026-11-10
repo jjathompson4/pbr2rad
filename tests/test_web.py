@@ -12,6 +12,7 @@ import pytest
 from PIL import Image
 
 from pbr2rad.web.app import create_app
+from pbr2rad.web.preview import PREVIEW_OK, PreviewResult
 
 from test_pvw import parse_pvw as _pvw_fields
 
@@ -252,16 +253,16 @@ def test_pvw_is_refreshed_from_the_render(tmp_path, albedo_png):
 
     def fake_render(mat_dir, rad_file, output_png, **kwargs):
         Image.new("RGB", (384, 384), (255, 0, 255)).save(output_png)
-        return True
+        return PreviewResult(PREVIEW_OK)
 
     out = tmp_path / "out"
     with mock.patch.object(api, "radiance_available", return_value=True), \
             mock.patch.object(api, "render_preview", side_effect=fake_render):
-        result, has_preview = api._convert_and_preview(
+        result, preview = api._convert_and_preview(
             discover(src), out, ConvertOptions(),
         )
 
-    assert has_preview
+    assert preview.rendered
     png = _pvw_fields(result.pvw_file.read_bytes())[3]
     with Image.open(BytesIO(png)) as img:
         assert img.size == (256, 256)
@@ -283,13 +284,50 @@ def test_convert_and_preview_renders_the_reference_wrap_variant(tmp_path):
     def fake_render(mat_dir, rad_file, output_png, **kwargs):
         seen.append(Path(rad_file).name)
         Image.new("RGB", (384, 384), (1, 2, 3)).save(output_png)
-        return True
+        return PreviewResult(PREVIEW_OK)
 
     with mock.patch.object(api, "radiance_available", return_value=True), \
             mock.patch.object(api, "render_preview", side_effect=fake_render):
         api._convert_and_preview(discover(src), tmp_path / "a", ConvertOptions(write_preview_variant=True))
         api._convert_and_preview(discover(src), tmp_path / "b", ConvertOptions())
     assert seen == ["preview_mat.rad", "mat.rad"]
+
+
+@pytest.mark.parametrize("status,has_url", [
+    ("ok", True), ("draft", True), ("timeout", False), ("error", False),
+])
+def test_rerender_reports_preview_status(client, albedo_png, status, has_url):
+    """A re-render whose preview runs out of time (or fails) says so instead of
+    silently returning no preview_url; the material itself is still updated."""
+    from pbr2rad.web import api
+
+    resp = client.post(
+        "/api/v1/convert/upload",
+        files=[("files", (albedo_png.name, open(albedo_png, "rb"), "image/png"))],
+        data={"options": "{}", "name": "m"},
+    )
+    assert resp.status_code == 200
+    job = resp.json()["job_id"]
+
+    def fake_render(mat_dir, rad_file, output_png, **kwargs):
+        if status in ("ok", "draft"):
+            Image.new("RGB", (384, 384), (9, 9, 9)).save(output_png)
+            return PreviewResult(status)
+        return PreviewResult(status, f"The preview render {status}.")
+
+    with mock.patch.object(api, "radiance_available", return_value=True), \
+            mock.patch.object(api, "render_preview", side_effect=fake_render):
+        resp = client.post(f"/api/v1/jobs/{job}/rerender", json={"diffuse_scale": 0.8})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["preview_status"] == status
+    assert data["diffuse_scale"] == pytest.approx(0.8)
+    if has_url:
+        assert data["preview_url"].startswith(f"/api/v1/preview/{job}?r=")
+        assert data["preview_error"] is None
+    else:
+        assert data["preview_url"] is None
+        assert data["preview_error"]
 
 
 def test_download_invalid_job(client):

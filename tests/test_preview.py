@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
+import subprocess
 
 import numpy as np
 import pytest
@@ -196,7 +198,100 @@ def test_env_lookup_follows_direction_and_rotation(monkeypatch):
 
 def test_render_preview_without_radiance(monkeypatch, tmp_path):
     monkeypatch.setattr(preview, "radiance_available", lambda: False)
-    assert preview.render_preview(tmp_path, tmp_path / "x.rad", tmp_path / "p.png") is False
+    res = preview.render_preview(tmp_path, tmp_path / "x.rad", tmp_path / "p.png")
+    assert res.status == preview.PREVIEW_UNAVAILABLE and not res.rendered
+
+
+class TestRenderBudget:
+    """A full render that runs out of time falls back to a draft; if the draft
+    runs out too, the result says so and no stale picture is left behind
+    (a re-render must not keep serving the previous settings' sphere)."""
+
+    def _fake_tools(self, monkeypatch, *, rpict_timeouts=0, rpict_fails=False):
+        """Stand-in for subprocess.run: rpict raises TimeoutExpired for the
+        first ``rpict_timeouts`` calls (or fails outright); every other tool
+        succeeds and ra_bmp writes a BMP so the PNG step runs. Returns the
+        recorded (rpict args, timeout) pairs."""
+        from PIL import Image
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "rpict":
+                calls.append((list(cmd), kw.get("timeout")))
+                if rpict_fails:
+                    raise subprocess.CalledProcessError(1, cmd, stderr=b"rpict: fatal")
+                if len(calls) <= rpict_timeouts:
+                    raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            elif cmd[0] == "ra_bmp":
+                Image.new("RGB", (384, 384), (90, 90, 90)).save(cmd[2], format="BMP")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        monkeypatch.setattr(preview, "radiance_available", lambda: True)
+        monkeypatch.setattr(preview.subprocess, "run", fake_run)
+        return calls
+
+    @staticmethod
+    def _arg(cmd, flag):
+        return cmd[cmd.index(flag) + 1]
+
+    def test_full_render(self, monkeypatch, tmp_path):
+        calls = self._fake_tools(monkeypatch)
+        out = tmp_path / "preview.png"
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out, roughness=0.3)
+        assert res.status == preview.PREVIEW_OK and res.rendered and out.exists()
+        (cmd, timeout), = calls
+        assert timeout == preview.PREVIEW_FULL_TIMEOUT_S
+        assert self._arg(cmd, "-x") == str(384 * preview.SUPERSAMPLE)   # glossy: sampled at 2x
+        # One bounce on the light rig: a second only recursed on bump-tilted
+        # self-hits (Bricks105 at bump x3: 4 s -> 67 s).
+        assert self._arg(cmd, "-ab") == "1"
+
+    def test_full_timeout_falls_back_to_draft(self, monkeypatch, tmp_path):
+        calls = self._fake_tools(monkeypatch, rpict_timeouts=1)
+        out = tmp_path / "preview.png"
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out, roughness=0.3)
+        assert res.status == preview.PREVIEW_DRAFT and res.rendered and out.exists()
+        assert [t for _, t in calls] == [preview.PREVIEW_FULL_TIMEOUT_S, preview.PREVIEW_DRAFT_TIMEOUT_S]
+        draft = calls[1][0]
+        assert self._arg(draft, "-x") == "384"                         # no supersampling
+        assert "-st" not in draft                                       # specular folded
+        assert preview.PREVIEW_FULL_TIMEOUT_S + preview.PREVIEW_DRAFT_TIMEOUT_S <= 60
+
+    def test_draft_timeout_reports_and_leaves_no_stale_png(self, monkeypatch, tmp_path):
+        self._fake_tools(monkeypatch, rpict_timeouts=2)
+        out = tmp_path / "preview.png"
+        out.write_bytes(b"the previous settings' picture")
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out)
+        assert res.status == preview.PREVIEW_TIMEOUT and not res.rendered and res.detail
+        assert not out.exists()
+
+    def test_tool_failure_is_an_error(self, monkeypatch, tmp_path):
+        self._fake_tools(monkeypatch, rpict_fails=True)
+        out = tmp_path / "preview.png"
+        out.write_bytes(b"old")
+        res = preview.render_preview(tmp_path, tmp_path / "m.rad", out)
+        assert res.status == preview.PREVIEW_ERROR and "rpict" in res.detail
+        assert not out.exists()
+
+    @pytest.mark.skipif(not shutil.which("rpict"), reason="Radiance not installed")
+    def test_draft_settings_render_with_real_radiance(self, tmp_path):
+        """The draft options are valid rpict options and yield a real sphere."""
+        from PIL import Image
+
+        from pbr2rad.convert import ConvertOptions, convert_set
+        from pbr2rad.discover import discover
+
+        src = tmp_path / "src" / "mat"
+        src.mkdir(parents=True)
+        Image.new("RGB", (16, 16), (180, 140, 100)).save(src / "mat_diff.png")
+        res = convert_set(discover(src), tmp_path / "out", ConvertOptions())
+        out = res.out_dir / "preview.png"
+        pv = preview.render_preview(res.out_dir, res.rad_file, out, full_timeout=0.001)
+        assert pv.status == preview.PREVIEW_DRAFT, pv
+        with Image.open(out) as img:
+            assert img.size == (384, 384) and img.mode == "RGBA"
+            assert img.getpixel((192, 192))[3] == 255                     # the sphere, opaque
 
 
 class TestLightRig:
