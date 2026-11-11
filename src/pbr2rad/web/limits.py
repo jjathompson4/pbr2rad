@@ -21,6 +21,8 @@ from collections import defaultdict, deque
 
 from fastapi import HTTPException, Request
 
+from .netsec import client_ip
+
 WINDOW_SECONDS = 60.0
 
 # Prune idle-IP entries every N checks so the per-IP dict can't grow forever.
@@ -33,7 +35,7 @@ def _make_limiter(max_requests: int):
 
     def dependency(request: Request) -> None:
         nonlocal counter
-        ip = request.client.host if request.client else "unknown"
+        ip = client_ip(request)   # never X-Forwarded-For: see netsec.py
         now = time.monotonic()
         cutoff = now - WINDOW_SECONDS
 

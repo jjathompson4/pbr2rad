@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 import logging
 import os
@@ -19,6 +21,24 @@ from .discover import PBRSet
 from .fetch import SIDECAR_NAME
 
 log = logging.getLogger("pbr2rad.convert")
+
+
+# Material names: a directory component and a Radiance identifier. No
+# whitespace, no control characters, nothing a shell or Radiance could read
+# as syntax. See convert_set().
+_SAFE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]{0,95}")
+
+
+def is_safe_material_name(name: str) -> bool:
+    return bool(name) and ".." not in name and _SAFE_NAME_RE.fullmatch(name) is not None
+
+
+def safe_material_name(raw: str, default: str = "material") -> str:
+    """Reduce free text (an upload's name, a folder name) to a safe name."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.\-]+", "_", raw or "").strip("._-")
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)[:96].rstrip("._-")
+    return cleaned if is_safe_material_name(cleaned) else default
+
 
 
 @dataclass
@@ -289,16 +309,15 @@ def convert_set(
     if pbr.albedo is None:
         raise ValueError(f"PBR set {pbr.name!r} has no albedo map — cannot convert")
 
-    # The set name becomes a directory component; reject anything that could
-    # escape out_root (the web layer passes user-supplied names through here).
+    # The set name becomes a directory component AND an identifier written
+    # into the .rad/.cal files. Radiance runs any scene line starting with
+    # "!" as a shell command, so a name carrying a newline would be command
+    # execution the moment oconv reads the file: allow a strict set only.
     name = pbr.name
-    if (
-        not name
-        or name in (".", "..")
-        or any(ch in name for ch in ("/", "\\", ":", "\0"))
-        or ".." in name
-    ):
-        raise ValueError(f"Invalid material name {name!r}")
+    if not is_safe_material_name(name):
+        raise ValueError(
+            f"Invalid material name {name!r} (use letters, digits, '_', '-' and '.')"
+        )
 
     out_dir = Path(out_root) / pbr.name
     out_dir.mkdir(parents=True, exist_ok=True)

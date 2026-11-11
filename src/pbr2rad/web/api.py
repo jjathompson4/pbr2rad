@@ -22,12 +22,12 @@ from PIL import Image
 
 from .. import __version__
 from .. import ambientcg as acg
-from ..convert import ConvertOptions, convert_set, write_manifest
+from ..convert import ConvertOptions, convert_set, is_safe_material_name, write_manifest
 from ..discover import PBRSet, discover
 from ..fetch import FetchError, _cache_root
 from ..pvw import make_preview_png, write_pvw
 from ..sources import SOURCES, TextureSource, get_catalog_fetcher, get_downloader, get_source
-from . import tempdir
+from . import metrics, tempdir
 from .limits import rate_limit, rate_limit_light, rate_limit_poll, rate_limit_refine
 from .models import (
     ChannelMap,
@@ -119,6 +119,37 @@ MAX_FILE_BYTES = 25 * 1024 * 1024       # 25 MB per file
 MAX_TOTAL_BYTES = 80 * 1024 * 1024      # 80 MB per request
 MAX_RESOLUTION = 2048                   # downscale ceiling (longest edge, px)
 _UPLOAD_CHUNK = 1024 * 1024             # 1 MB streaming read
+# Largest image an upload may declare (8192 x 8192). A small file can claim
+# far more pixels than that and cost gigabytes to decode; the header is
+# checked before anything is decoded.
+MAX_SOURCE_PIXELS = 8192 * 8192
+Image.MAX_IMAGE_PIXELS = MAX_SOURCE_PIXELS
+_JOBS_FULL_DETAIL = "The server is out of working space for the moment. Try again in a few minutes."
+
+
+def _new_job() -> tuple[str, Path, Path]:
+    try:
+        return tempdir.new_job()
+    except tempdir.JobsFull:
+        raise HTTPException(503, _JOBS_FULL_DETAIL, headers={"Retry-After": "300"})
+
+
+def _reject_huge_images(upload_dir: Path) -> None:
+    """413 for any upload whose header declares more than MAX_SOURCE_PIXELS."""
+    for p in upload_dir.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            with Image.open(p) as im:       # lazy: reads the header only
+                w, h = im.size
+        except Image.DecompressionBombError:
+            w = h = MAX_SOURCE_PIXELS       # Pillow refused it outright
+        except Exception:
+            continue                        # not a Pillow raster (.hdr/.exr)
+        if w * h > MAX_SOURCE_PIXELS:
+            raise HTTPException(
+                413, f"{p.name!r} is too large ({w} x {h} px). The limit is 8192 x 8192."
+            )
 
 # Raster formats Pillow can open + the HDR/EXR maps the pipeline accepts.
 _ALLOWED_EXTS = {
@@ -176,8 +207,14 @@ def _build_pbrset_from_labels(
     """Construct a PBRSet from explicit user labels."""
     pbr = PBRSet(name=name, root=upload_dir)
     for cm in channels:
-        filepath = upload_dir / cm.filename
-        if filepath.exists():
+        # A label names one of the uploaded files, nothing else: a path in
+        # here ("../..", "/etc/...") would point the converter at any file
+        # on the server.
+        fname = Path(cm.filename).name
+        if not fname or fname != cm.filename:
+            continue
+        filepath = upload_dir / fname
+        if filepath.is_file():
             pbr.maps[cm.channel] = filepath
     return pbr
 
@@ -372,10 +409,15 @@ async def discover_channels(
     files: list[UploadFile] = File(...),
 ):
     """Upload images and auto-detect PBR channels."""
-    job_id, upload_dir, _ = tempdir.new_job()
-    await _save_uploads(files, upload_dir)
-
-    pbr = await run_in_threadpool(discover, upload_dir)
+    job_id, upload_dir, _ = _new_job()
+    try:
+        await _save_uploads(files, upload_dir)
+        await run_in_threadpool(_reject_huge_images, upload_dir)
+        pbr = await run_in_threadpool(discover, upload_dir)
+    finally:
+        # Detection only needs the filenames; the page uploads the files
+        # again to convert, so nothing here is worth keeping for 30 minutes.
+        await run_in_threadpool(tempdir.discard_job, job_id)
 
     # Build response: for each file, show what channel it was assigned
     channels = []
@@ -482,7 +524,9 @@ def _convert_and_preview(
         raise HTTPException(400, str(exc))
     except Exception as exc:
         log.exception("conversion failed for %r", pbr.name)
-        raise HTTPException(500, f"Conversion failed: {exc}")
+        raise HTTPException(
+            500, "Conversion failed: the maps could not be processed. "
+                 "Check that every file is a valid image.")
 
     preview = PreviewResult(PREVIEW_UNAVAILABLE)
     if radiance_available():
@@ -506,18 +550,37 @@ async def _acquire_for_job() -> None:
 
 async def _run_conversion(
     job_id: str, work, *, source: str | None = None, preview_rev: int | None = None,
+    kind: str = "convert", asset: str | None = None,
 ) -> ConvertResponse:
     """Run blocking conversion work in the threadpool, one job at a time.
 
     The event loop stays free to serve health checks and browsing traffic
     while the conversion grinds on the CPU.
     """
-    await _acquire_for_job()
+    started = time.monotonic()
+    # Anonymous counters for the operator's stats page (metrics.py): the
+    # source and catalog asset, never anything about an upload or a visitor.
+    event = {"source": source or "upload", "asset": asset}
+    try:
+        await _acquire_for_job()
+    except HTTPException:
+        metrics.record(kind, status="busy", **event)
+        raise
     try:
         result, preview = await run_in_threadpool(work)
         _save_preview_inputs(job_id, result)
+    except HTTPException as exc:
+        metrics.record(kind, status="error", detail=f"http_{exc.status_code}",
+                       ms=(time.monotonic() - started) * 1000, **event)
+        raise
+    except Exception:
+        metrics.record(kind, status="error", detail="exception",
+                       ms=(time.monotonic() - started) * 1000, **event)
+        raise
     finally:
         _CONVERT_LOCK.release()
+    metrics.record(kind, status="ok", detail=preview.status,
+                   ms=(time.monotonic() - started) * 1000, **event)
     return _make_response(job_id, result, preview, source=source, preview_rev=preview_rev)
 
 
@@ -532,8 +595,12 @@ async def convert_upload(
     """Upload images and convert to Radiance material."""
     if preview_quality not in (PREVIEW_QUALITY_FULL, PREVIEW_QUALITY_DRAFT):
         raise HTTPException(400, f"Invalid preview_quality {preview_quality!r}")
-    job_id, upload_dir, output_dir = tempdir.new_job()
+    job_id, upload_dir, output_dir = _new_job()
     await _save_uploads(files, upload_dir)
+    await run_in_threadpool(_reject_huge_images, upload_dir)
+    # "My brick" is a fine thing to type; a Radiance identifier has no
+    # spaces. Anything else outside the allowed set is a 400 (convert_set).
+    name = "_".join(name.split())
 
     # Parse options/channels up front: cheap, and bad input should fail
     # before any heavy work starts.
@@ -598,7 +665,7 @@ async def _convert_from_source(
             f"(choose from: {', '.join(src.formats)})",
         )
     download = get_downloader(source)
-    job_id, upload_dir, output_dir = tempdir.new_job()
+    job_id, upload_dir, output_dir = _new_job()
     opts = _opts_from_request(options, source=source)
 
     def work():
@@ -629,7 +696,7 @@ async def _convert_from_source(
         })
         return _convert_and_preview(pbr, output_dir, opts, quality=preview_quality)
 
-    return await _run_conversion(job_id, work, source=source)
+    return await _run_conversion(job_id, work, source=source, asset=asset_id[:64])
 
 
 @router.post("/jobs/{job_id}/rerender", response_model=ConvertResponse, dependencies=[Depends(rate_limit)])
@@ -690,6 +757,7 @@ async def rerender_job(job_id: str, req: RerenderRequest):
 
     return await _run_conversion(
         job_id, work, source=source, preview_rev=int(time.time() * 1000),
+        kind="rerender", asset=state.get("asset_id"),
     )
 
 
@@ -832,10 +900,18 @@ async def download(job_id: str):
         raise HTTPException(404, "Job not found or expired")
 
     buf = await run_in_threadpool(_zip_directory, out_dir)
+    # Name the zip after the material (its folder; convert_set only lets
+    # letters, digits, "_", "-" and "." through, so it is header-safe).
+    stem = f"pbr2rad_{job_id}"
+    mats = sorted(d.name for d in out_dir.iterdir() if d.is_dir())
+    if len(mats) == 1 and is_safe_material_name(mats[0]):
+        stem = mats[0]
+    state = tempdir.read_job_state(job_id) or {}
+    metrics.record("download", source=state.get("source") or "upload", asset=state.get("asset_id"))
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=pbr2rad_{job_id}.zip"},
+        headers={"Content-Disposition": f'attachment; filename="{stem}.zip"'},
     )
 
 
@@ -974,7 +1050,12 @@ def _catalog_index(source: str) -> dict[str, dict]:
     return slot["index"]
 
 
-def _search_catalog(catalog: list[dict], q: str, *, limit: int = 30) -> list[dict]:
+SEARCH_PAGE = 30
+
+
+def _search_catalog(
+    catalog: list[dict], q: str, *, limit: int = SEARCH_PAGE, offset: int = 0,
+) -> list[dict]:
     """Token-AND substring search over id, name and tags.
 
     Names on ambientCG are generic ("Bricks 104"); the tags carry the meaning,
@@ -994,6 +1075,9 @@ def _search_catalog(catalog: list[dict], q: str, *, limit: int = 30) -> list[dic
             )).lower()
             if not all(t in hay for t in tokens):
                 continue
+        if offset > 0:          # "Load more": skip the matches already shown
+            offset -= 1
+            continue
         results.append({
             "id": e.get("id"),
             "name": e.get("name") or e.get("id"),
@@ -1028,20 +1112,30 @@ async def list_sources():
 
 
 @router.get("/sources/{source}/search", dependencies=[Depends(rate_limit_light)])
-async def source_search(source: str, q: str = ""):
-    """Search a source's catalog (cached per source TTL)."""
+async def source_search(
+    source: str,
+    q: str = Query(default="", max_length=200),
+    offset: int = Query(default=0, ge=0, le=10000),
+):
+    """Search a source's catalog (cached per source TTL). Returns up to 30
+    matches from ``offset``; fewer than 30 means there are no more."""
+    return await _search(source, q, offset)
+
+
+async def _search(source: str, q: str, offset: int = 0) -> list[dict]:
     src = _source_or_404(source)
     try:
         catalog = await run_in_threadpool(_load_catalog, source)
-    except Exception as exc:
-        raise HTTPException(502, f"{src.display_name} API error: {exc}")
-    return _search_catalog(catalog, q)
+    except Exception:
+        log.warning("%s catalog unavailable for search", source, exc_info=True)
+        raise HTTPException(502, f"{src.display_name} is not responding right now. Try again shortly.")
+    return _search_catalog(catalog, q[:200], offset=offset)
 
 
 @router.get("/polyhaven/search", dependencies=[Depends(rate_limit_light)])
 async def polyhaven_search(q: str = ""):
     """Search Poly Haven textures (legacy alias; also returns ``slug``)."""
-    results = await source_search("polyhaven", q)
+    results = await _search("polyhaven", q)
     return [{"slug": r["id"], **r} for r in results]
 
 

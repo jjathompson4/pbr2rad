@@ -14,6 +14,7 @@ def _isolated_download_cache(tmp_path, monkeypatch):
     its root through $PBR2RAD_CACHE_DIR, so one env var isolates them all.
     """
     monkeypatch.setenv("PBR2RAD_CACHE_DIR", str(tmp_path / "pbr2rad-cache"))
+    monkeypatch.setenv("PBR2RAD_DATA_DIR", str(tmp_path / "pbr2rad-data"))
     # Budget eviction walks are memoised; start each test with a clean memo.
     from pbr2rad import fetch
 

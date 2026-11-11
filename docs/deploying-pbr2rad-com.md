@@ -117,3 +117,39 @@ convert, and `/api/v1/health` should return OK.
   boot, every 10 min and after each download. Stopped-rootfs storage is
   billed per GB, so the cap also bounds that cost. Temp job dirs are still
   swept after 30 min.
+
+## Security switches and the stats page
+
+Set in `fly.toml` (`[env]`):
+
+- `PBR2RAD_REQUIRE_CLOUDFLARE=1`: requests that did not come through a
+  Cloudflare edge get a 403 (the `*.fly.dev` name and the raw Fly IP skip the
+  WAF). The health check is exempt. If the whole site starts answering 403,
+  Cloudflare has added an address range: add it with
+  `fly secrets set PBR2RAD_CLOUDFLARE_CIDRS=<cidr>,<cidr>` or update
+  `src/pbr2rad/web/netsec.py` from <https://www.cloudflare.com/ips/>.
+- `PBR2RAD_DISABLE_DOCS=1`: no `/docs`, `/redoc`, `/openapi.json`.
+- `PBR2RAD_JOBS_MAX_MB`: ceiling for live jobs' files.
+
+Stats page (`/admin/stats`): off until a token of 16+ characters is set as a
+secret, then it asks for a password (any username, the token as password):
+
+```bash
+fly secrets set PBR2RAD_ADMIN_TOKEN="$(openssl rand -hex 24)"
+```
+
+The counters live in `~/.local/share/pbr2rad/metrics.sqlite` on the machine's
+root filesystem. Whether that file survives a deploy has not been checked; if
+it does not, mount a Fly volume and point `PBR2RAD_DATA_DIR` at it.
+
+After deploying, check from outside:
+
+```bash
+curl -sI https://pbr2rad.com/ | grep -i -E "content-security|strict-transport"
+```
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" --resolve pbr2rad.com:443:$(dig +short pbr2rad.fly.dev | head -1) https://pbr2rad.com/api/v1/sources
+```
+
+The second should print 403.
