@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -191,6 +192,22 @@ class FetchError(Exception):
     """Raised when a Poly Haven API or download operation fails."""
 
 
+# Every Poly Haven slug is lower-case letters, digits and underscores
+# (checked against the full texture catalog, 2026-11). The slug goes into an
+# API URL and becomes directory names (job folder, cache), so anything else
+# is refused before the network or the disk is touched.
+_SLUG_RE = re.compile(r"[A-Za-z0-9_]{1,64}")
+
+
+def validate_slug(slug: str) -> str:
+    if not isinstance(slug, str) or _SLUG_RE.fullmatch(slug) is None:
+        raise FetchError(
+            f"invalid Poly Haven asset id {str(slug)[:80]!r} "
+            "(expected letters, digits and underscores, e.g. 'wood_floor_03')"
+        )
+    return slug
+
+
 def _api_get(path: str) -> dict:
     """GET a JSON endpoint from the Poly Haven API."""
     url = f"{_BASE_URL}{path}"
@@ -200,7 +217,7 @@ def _api_get(path: str) -> dict:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise FetchError(f"asset not found: {path}") from exc
+            raise FetchError("asset not found on Poly Haven") from exc
         raise FetchError(f"API error {exc.code} for {url}") from exc
     except urllib.error.URLError as exc:
         raise FetchError(f"network error: {exc.reason}") from exc
@@ -208,7 +225,7 @@ def _api_get(path: str) -> dict:
 
 def fetch_asset_info(slug: str) -> dict:
     """Fetch metadata for a single Poly Haven asset."""
-    return _api_get(f"/info/{slug}")
+    return _api_get(f"/info/{validate_slug(slug)}")
 
 
 def fetch_asset_files(slug: str) -> dict:
@@ -216,7 +233,7 @@ def fetch_asset_files(slug: str) -> dict:
 
     Returns a nested dict: ``{channel: {resolution: {format: {url, md5, size}}}}``.
     """
-    return _api_get(f"/files/{slug}")
+    return _api_get(f"/files/{validate_slug(slug)}")
 
 
 def _pick_files(
@@ -431,6 +448,7 @@ def download_texture_set(
     Creates ``<output_dir>/<slug>/`` with the downloaded texture files.
     Returns the path to the created material folder.
     """
+    validate_slug(slug)
     # Validate the asset exists and is a texture
     info = fetch_asset_info(slug)
     asset_type = info.get("type")

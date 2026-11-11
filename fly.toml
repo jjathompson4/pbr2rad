@@ -18,6 +18,18 @@ swap_size_mb = 512
   # Ceiling for ~/.cache/pbr2rad (Poly Haven maps, ambientCG packs + map
   # thumbnails, catalogs). Least-recently-modified files are evicted past it.
   PBR2RAD_CACHE_MAX_MB = "1024"
+  # Ceiling for live jobs (uploads + outputs, kept 30 min). New jobs get a
+  # 503 past it instead of filling the disk.
+  PBR2RAD_JOBS_MAX_MB = "3072"
+  # Don't publish /docs, /redoc and /openapi.json.
+  PBR2RAD_DISABLE_DOCS = "1"
+  # Refuse requests that did not come through a Cloudflare edge (the
+  # *.fly.dev name and the raw Fly IP both skip the WAF). The health check
+  # is exempt. If the site ever answers 403 for everyone, Cloudflare added
+  # an address range: update netsec.py or set PBR2RAD_CLOUDFLARE_CIDRS.
+  PBR2RAD_REQUIRE_CLOUDFLARE = "1"
+  # The stats page (/admin/stats) stays off until its token is set as a
+  # secret:  fly secrets set PBR2RAD_ADMIN_TOKEN=<long random string>
 
 [http_service]
   internal_port = 8080

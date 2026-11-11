@@ -334,7 +334,8 @@ main > .panel {
 }
 
 .dropzone p { margin-bottom: 0.5rem; }
-.dropzone small { font-size: 0.8rem; }
+.dropzone small { font-size: 0.8rem; display: block; }
+.dropzone-limits { margin-top: 0.35rem; color: var(--muted-2); }
 
 /* Channel table */
 .channel-table {
@@ -384,7 +385,24 @@ main > .panel {
   overflow-y: auto;
   align-content: start;
 }
-.ph-item { cursor: pointer; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
+.ph-item {
+  cursor: pointer; border: 2px solid transparent; border-radius: 4px; overflow: hidden;
+  /* a <button>: undo the control styling */
+  padding: 0; margin: 0; background: none; color: inherit; font: inherit; text-align: inherit;
+  display: block; width: 100%; min-width: 0;
+}
+.ph-item:focus-visible, .ph-more:focus-visible, .dropzone:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.ph-more {
+  grid-column: 1 / -1; margin: 0.4rem 0; padding: 0.5rem;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: none; color: inherit; font: inherit; font-size: 0.85rem; cursor: pointer;
+}
+.ph-more:hover:not(:disabled) { border-color: var(--muted); }
+.ph-more:disabled { opacity: 0.6; cursor: default; }
+.ph-grid-msg { grid-column: 1 / -1; color: var(--muted-2); font-size: 0.85rem; }
+.ph-grid-msg.error { color: #c62828; }
 .ph-item.selected { border-color: var(--accent); }
 .ph-item img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
 .ph-item-name { font-size: 0.7rem; padding: 0.2rem; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -950,4 +968,26 @@ footer {
   #tooltip { max-width: calc(100vw - 16px); }
   .about-dialog { width: calc(100vw - 1.5rem); }
   footer { padding: 0.8rem 0.75rem 1rem; }
+}
+
+
+/* First-visit introduction (above the panels) */
+.intro {
+  max-width: 1600px; margin: 1rem auto 0; padding: 0.75rem 1.25rem;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1.5rem;
+  font-size: 0.88rem; color: var(--muted);
+}
+.intro[hidden] { display: none; }
+.intro-lead { flex: 1 1 100%; font-size: 0.98rem; color: inherit; }
+.intro-lead strong { font-weight: 600; }
+.intro-steps {
+  flex: 1 1 32rem; margin: 0; padding-left: 1.2rem;
+  display: flex; flex-wrap: wrap; gap: 0.2rem 2rem;
+}
+.intro-steps li { flex: 1 1 14rem; }
+.intro-actions { display: flex; gap: 1rem; }
+@media (max-width: 640px) {
+  .intro { padding: 0.75rem 1rem; }
+  .intro-steps { flex-direction: column; gap: 0.2rem; }
+  .intro-steps li { flex: 0 0 auto; }
 }

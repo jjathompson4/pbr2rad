@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Security (site review, 2026-11-11)
+
+- **Command execution through the material name.** The upload form's name
+  went into the `.rad` file as written. Radiance runs any scene line that
+  starts with `!` as a shell command, so a name containing a newline ran
+  commands on the server when the preview was rendered. Names are now
+  limited to letters, digits, `_`, `-` and `.` (`convert.is_safe_material_name`);
+  the web form turns spaces into underscores and refuses anything else.
+- **Rate limit could be reset with a made-up `X-Forwarded-For`.** The limiter
+  now keys on `Fly-Client-IP`, and on `CF-Connecting-IP` only when the
+  connection came from a Cloudflare address (`web/netsec.py`).
+- **Cloudflare could be skipped** by connecting to the Fly address with
+  `Host: pbr2rad.com`. With `PBR2RAD_REQUIRE_CLOUDFLARE=1` (set in fly.toml)
+  such requests get a 403; the health check is exempt.
+- **Poly Haven ids were not checked** and became directory names; ids are now
+  letters, digits and underscores only, checked before any network or disk use.
+- **Upload channel labels could name any file on the server**; a label must
+  now be the bare name of an uploaded file.
+- Job ids must be 12 hex characters. `/discover` deletes its files when it
+  answers. Live jobs have a size ceiling (`PBR2RAD_JOBS_MAX_MB`, 503 past it).
+  Images declaring more than 8192 x 8192 pixels are refused (413).
+- Responses carry a Content-Security-Policy, HSTS, `nosniff` and frame
+  headers; the page has no inline script (`static/theme.js`). CORS is off
+  unless `PBR2RAD_CORS_ORIGINS` lists origins. `/docs`, `/redoc` and
+  `/openapi.json` are off with `PBR2RAD_DISABLE_DOCS=1`. Error messages no
+  longer repeat exception text. `/.well-known/security.txt` added.
+- Builds: dependency versions pinned (`requirements-web.lock`), Radiance
+  download checked against a sha256.
+
+### Added
+
+- **Private stats page** at `/admin/stats` (HTTP Basic, password =
+  `PBR2RAD_ADMIN_TOKEN`; 404 until that secret is set). Counts conversions,
+  re-renders and downloads by source and catalog asset in a SQLite file
+  (`PBR2RAD_DATA_DIR`). No IP addresses, cookies or upload names are stored.
+- Landing introduction (three steps, dismissible), "Load more" in the catalog
+  (`/search?offset=`), keyboard-reachable material tiles, upload limits shown
+  in the dropzone, favicon, page description, zip named after the material.
+- About dialog: limitations rewritten (reflectance is not measured, one
+  roughness per material, opaque materials only, shared single-job server)
+  and a new "Your files and privacy" section.
+
 ### Fixed
 
 - **Normal maps now lean along each surface, not along world axes.** The

@@ -24,6 +24,14 @@ const CHANNELS = [
 
 let uploadedFiles = [];
 
+// Escape text for use inside an HTML string. Filenames, catalog names and
+// server messages are data; none of them may become markup.
+function esc(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
 // Conversions can legitimately take a couple of minutes on the small host;
 // past this we assume the request is lost and give the button back.
 const CONVERT_TIMEOUT_MS = 240000;
@@ -431,9 +439,9 @@ async function handleFiles(fileList) {
     data.channels.forEach(ch => {
       const tr = document.createElement("tr");
       const options = CHANNELS.map(c =>
-        `<option value="${c}" ${c === ch.channel ? "selected" : ""}>${c}</option>`
+        `<option value="${esc(c)}" ${c === ch.channel ? "selected" : ""}>${esc(c)}</option>`
       ).join("");
-      tr.innerHTML = `<td>${ch.filename}</td><td><select>${options}</select></td>`;
+      tr.innerHTML = `<td>${esc(ch.filename)}</td><td><select aria-label="Channel for ${esc(ch.filename)}">${options}</select></td>`;
       tbody.appendChild(tr);
     });
     document.getElementById("channel-table").style.display = "table";
@@ -546,39 +554,94 @@ function heroFor(item) {
     || item.preview_large || item.preview || "";
 }
 
-function renderCatalogGrid(results) {
+// The server returns matches a page at a time; a full page means there may
+// be more, and the grid ends with a "Load more" button.
+const SEARCH_PAGE = 30;
+let lastQuery = "";
+let lastHasMore = false;
+
+function gridMessage(text, isError) {
+  const p = document.createElement("p");
+  p.className = "ph-grid-msg" + (isError ? " error" : "");
+  p.textContent = text;
+  return p;
+}
+
+function renderCatalogGrid(results, hasMore) {
   const grid = document.getElementById("ph-grid");
   grid.innerHTML = "";
   results.forEach(item => {
-    const div = document.createElement("div");
-    div.className = "ph-item";
-    if (item.id === selectedAssetId) div.classList.add("selected");
-    div.innerHTML = `<img src="${thumbFor(item)}" alt="${item.name}" loading="lazy"><div class="ph-item-name">${item.name}</div>`;
-    div.addEventListener("click", () => selectAsset(item, div));
-    grid.appendChild(div);
+    // A real button: reachable with Tab, activated with Enter or Space.
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "ph-item";
+    if (item.id === selectedAssetId) tile.classList.add("selected");
+    tile.setAttribute("aria-pressed", item.id === selectedAssetId ? "true" : "false");
+    const img = document.createElement("img");
+    img.src = thumbFor(item);
+    img.alt = "";
+    img.loading = "lazy";
+    const label = document.createElement("div");
+    label.className = "ph-item-name";
+    label.textContent = item.name;
+    tile.title = item.name;
+    tile.append(img, label);
+    tile.addEventListener("click", () => selectAsset(item, tile));
+    grid.appendChild(tile);
   });
-  if (!results.length) grid.innerHTML = "<p style='color:#999;font-size:0.85rem'>No results</p>";
+  if (!results.length) grid.appendChild(gridMessage("No results"));
+  if (hasMore) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "ph-more";
+    more.textContent = "Load more";
+    more.addEventListener("click", () => {
+      more.disabled = true;
+      more.textContent = "Loading…";
+      searchCatalog(lastQuery, true);
+    });
+    grid.appendChild(more);
+  }
 }
 
-async function searchCatalog(q) {
+async function searchCatalog(q, append) {
   const grid = document.getElementById("ph-grid");
   const source = selectedSource;
-  grid.innerHTML = "<p style='color:#999;font-size:0.85rem'>Searching...</p>";
+  const offset = append ? lastResults.length : 0;
+  if (!append) {
+    grid.innerHTML = "";
+    grid.appendChild(gridMessage("Searching..."));
+  }
 
   if (phSearchAbort) phSearchAbort.abort();
   phSearchAbort = new AbortController();
 
   try {
-    const resp = await fetch(`/api/v1/sources/${source}/search?q=${encodeURIComponent(q)}`,
+    const resp = await fetch(
+      `/api/v1/sources/${source}/search?q=${encodeURIComponent(q)}&offset=${offset}`,
       { signal: phSearchAbort.signal });
     if (!resp.ok) throw new Error(await apiError(resp));
     const results = await resp.json();
     if (source !== selectedSource) return; // user switched source mid-flight
-    lastResults = results;
-    renderCatalogGrid(results);
+    const scroll = grid.scrollTop;
+    lastQuery = q;
+    lastResults = append ? lastResults.concat(results) : results;
+    lastHasMore = results.length >= SEARCH_PAGE;
+    renderCatalogGrid(lastResults, lastHasMore);
+    if (append) {
+      grid.scrollTop = scroll;
+      const next = grid.querySelectorAll(".ph-item")[offset];
+      if (next) next.focus({ preventScroll: true });
+    }
   } catch (err) {
     if (err && err.name === "AbortError") return; // superseded by a newer search
-    grid.innerHTML = `<p style='color:#c62828;font-size:0.85rem'>Search failed: ${errMessage(err)}</p>`;
+    if (append) {
+      renderCatalogGrid(lastResults, true);   // keep what is shown; offer the button again
+      setStatus("Couldn't load more: " + errMessage(err), "error");
+      return;
+    }
+    grid.innerHTML = "";
+    grid.appendChild(gridMessage("Search failed: " + errMessage(err), true));
   }
 }
 
@@ -648,8 +711,12 @@ async function selectAsset(item, el) {
   }
 
   // Highlight
-  document.querySelectorAll(".ph-item").forEach(x => x.classList.remove("selected"));
+  document.querySelectorAll(".ph-item").forEach(x => {
+    x.classList.remove("selected");
+    x.setAttribute("aria-pressed", "false");
+  });
   el.classList.add("selected");
+  el.setAttribute("aria-pressed", "true");
 
   // Show detail; clear stale state from the previously selected asset so a
   // failed info fetch can't leave the old asset's maps under the new name.
@@ -729,15 +796,15 @@ function renderPHMapsGrid(maps) {
     tile.dataset.channel = m.channel;
     tile.dataset.rot = "0";
     const visual = m.thumbnail_url
-      ? `<img class="map-thumb-img" src="${m.thumbnail_url}" alt="${m.channel}" loading="lazy">`
-      : `<div class="map-thumb-img map-thumb-placeholder">${MAP_ABBREV[m.channel] || m.channel}</div>`;
+      ? `<img class="map-thumb-img" src="${esc(m.thumbnail_url)}" alt="${esc(m.channel)}" loading="lazy">`
+      : `<div class="map-thumb-img map-thumb-placeholder">${esc(MAP_ABBREV[m.channel] || m.channel)}</div>`;
     tile.innerHTML = `
       <div class="map-thumb-img-wrap" title="Click to rotate 90° CCW">
         ${visual}
         <span class="map-thumb-rot-badge">0°</span>
         <span class="map-thumb-usage-badge"></span>
       </div>
-      <div class="map-thumb-label">${m.channel.replace("_", " ")}</div>
+      <div class="map-thumb-label">${esc(String(m.channel).replace("_", " "))}</div>
     `;
     tile.querySelector(".map-thumb-img-wrap").addEventListener("click", () => {
       const cur = parseInt(tile.dataset.rot, 10) || 0;
@@ -957,7 +1024,7 @@ function showResult(data, refItem, opts = {}) {
   // Summary tab — what the converted material IS (Radiance semantics). Name,
   // source and physical size already live on the reference card.
   const dl = document.getElementById("result-summary");
-  const hex = data.avg_srgb_hex || "#888888";
+  const hex = /^#[0-9a-fA-F]{6}$/.test(data.avg_srgb_hex || "") ? data.avg_srgb_hex : "#888888";
   const refl = data.reflectance || null;
   const alpha = data.roughness_radiance != null ? data.roughness_radiance : Math.pow(data.roughness, 2);
   let rows = "";
@@ -971,17 +1038,17 @@ function showResult(data, refItem, opts = {}) {
   }
   rows += `
     <dt class="section">Radiance primitive</dt>
-    <dt>Type</dt><dd>${data.primitive}<span class="muted"> · metalness ${fmt3(data.metalness)}</span></dd>
+    <dt>Type</dt><dd>${esc(data.primitive)}<span class="muted"> · metalness ${fmt3(data.metalness)}</span></dd>
     <dt>Roughness α</dt><dd>${fmt3(alpha)}<span class="muted"> (perceptual ${fmt3(data.roughness)})</span></dd>
   `;
   const used = (data.channels_used || []).slice();
   const est = data.channels_estimated || [];
   const mapsText = used.length
-    ? used.join(" · ") + (est.length ? `<span class="muted"> · estimated: ${est.join(", ")}</span>` : "")
+    ? esc(used.join(" · ")) + (est.length ? `<span class="muted"> · estimated: ${esc(est.join(", "))}</span>` : "")
     : "—";
   rows += `
     <dt class="section">Texture</dt>
-    <dt>Resolution</dt><dd>${data.resolution[0]} × ${data.resolution[1]} px</dd>
+    <dt>Resolution</dt><dd>${esc(data.resolution[0])} × ${esc(data.resolution[1])} px</dd>
     <dt>Maps used</dt><dd>${mapsText}</dd>
   `;
   if (data.diffuse_scale && Math.abs(data.diffuse_scale - 1) > 1e-6) {
@@ -1167,7 +1234,7 @@ themeBtn.addEventListener("click", () => {
   syncThemeButton();
   // Re-pick catalog thumbnails + hero + the Output reference tile for the new
   // theme (ambientCG publishes light/dark variants).
-  if (lastResults.length) renderCatalogGrid(lastResults);
+  if (lastResults.length) renderCatalogGrid(lastResults, lastHasMore);
   if (selectedItem) renderHero(selectedItem, selectedInfo);
   if (currentRefItem && heroFor(currentRefItem)) {
     document.getElementById("preview-ref-img").src = heroFor(currentRefItem);
@@ -1183,3 +1250,37 @@ const aboutDlg = document.getElementById("about-dialog");
 document.getElementById("about-btn").addEventListener("click", () => aboutDlg.showModal());
 document.getElementById("about-close").addEventListener("click", () => aboutDlg.close());
 aboutDlg.addEventListener("click", e => { if (e.target === aboutDlg) aboutDlg.close(); });  // backdrop click
+
+
+// ---------------------------------------------------------------------------
+// First-visit introduction
+// ---------------------------------------------------------------------------
+(function setupIntro() {
+  const intro = document.getElementById("intro");
+  if (!intro) return;
+  const KEY = "pbr2rad-intro-hidden";
+  let hidden = false;
+  try { hidden = localStorage.getItem(KEY) === "1"; } catch (e) { /* storage blocked */ }
+  if (hidden) intro.hidden = true;
+  document.getElementById("intro-dismiss").addEventListener("click", () => {
+    intro.hidden = true;
+    try { localStorage.setItem(KEY, "1"); } catch (e) { /* storage blocked */ }
+  });
+  // The About dialog holds the long version (workflow, limitations, privacy).
+  document.getElementById("intro-more").addEventListener("click", () => {
+    document.getElementById("about-btn").click();
+  });
+})();
+
+// The dropzone is a click target; make it one for the keyboard too.
+(function setupDropzoneKeyboard() {
+  const zone = document.getElementById("dropzone");
+  if (!zone) return;
+  zone.addEventListener("keydown", e => {
+    if (e.target !== zone) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      document.getElementById("file-input").click();
+    }
+  });
+})();

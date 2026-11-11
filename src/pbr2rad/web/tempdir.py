@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -23,6 +24,55 @@ CLEANUP_INTERVAL = 5 * 60  # check every 5 minutes
 
 _root: Path | None = None
 
+# Job ids are 12 hex characters (new_job). Anything else in a URL is not a
+# job: refuse it before it is joined onto a path ("..", for one).
+_JOB_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+# Ceiling for everything under the jobs root (uploads + outputs of every live
+# job). Past it new jobs are refused until the sweeper frees space, so a
+# script cannot fill the disk. $PBR2RAD_JOBS_MAX_MB overrides; 0 disables.
+DEFAULT_JOBS_MAX_MB = 3072
+_USAGE_MEMO_SECONDS = 5.0
+_usage_memo = (0.0, 0)
+
+
+class JobsFull(Exception):
+    """The jobs directory is over its size budget."""
+
+
+def valid_job_id(job_id: str) -> bool:
+    return isinstance(job_id, str) and _JOB_ID_RE.fullmatch(job_id) is not None
+
+
+def jobs_budget_bytes() -> int:
+    raw = os.environ.get("PBR2RAD_JOBS_MAX_MB")
+    try:
+        mb = int(raw) if raw not in (None, "") else DEFAULT_JOBS_MAX_MB
+    except ValueError:
+        mb = DEFAULT_JOBS_MAX_MB
+    return max(0, mb) << 20
+
+
+def jobs_usage_bytes(*, refresh: bool = False) -> int:
+    """Bytes under the jobs root, memoised for a few seconds."""
+    global _usage_memo
+    now = time.monotonic()
+    if not refresh and now - _usage_memo[0] < _USAGE_MEMO_SECONDS:
+        return _usage_memo[1]
+    total = 0
+    for dirpath, _dirs, names in os.walk(get_root()):
+        for name in names:
+            try:
+                st = os.lstat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            # Cached source maps are hardlinked into jobs: count a file once
+            # it is ours alone, not the shared cache's.
+            if st.st_nlink <= 1:
+                total += st.st_size
+    _usage_memo = (now, total)
+    return total
+
 
 def get_root() -> Path:
     """Return the shared temp root, creating it if needed."""
@@ -35,8 +85,12 @@ def get_root() -> Path:
 def new_job() -> tuple[str, Path, Path]:
     """Create a new job with upload and output directories.
 
-    Returns ``(job_id, upload_dir, output_dir)``.
+    Returns ``(job_id, upload_dir, output_dir)``. Raises ``JobsFull`` when
+    the jobs directory is over its size budget.
     """
+    budget = jobs_budget_bytes()
+    if budget and jobs_usage_bytes() > budget:
+        raise JobsFull()
     job_id = uuid.uuid4().hex[:12]
     root = get_root()
     job_dir = root / job_id
@@ -49,6 +103,8 @@ def new_job() -> tuple[str, Path, Path]:
 
 def get_output_dir(job_id: str) -> Path | None:
     """Return the output directory for a job, or None if expired/missing."""
+    if not valid_job_id(job_id):
+        return None
     root = get_root()
     out = root / job_id / "output"
     return out if out.is_dir() else None
@@ -56,6 +112,8 @@ def get_output_dir(job_id: str) -> Path | None:
 
 def get_job_dir(job_id: str) -> Path | None:
     """Return the job root directory, or None if expired/missing."""
+    if not valid_job_id(job_id):
+        return None
     root = get_root()
     d = root / job_id
     return d if d.is_dir() else None
@@ -112,6 +170,13 @@ def cleanup() -> int:
             shutil.rmtree(d, ignore_errors=True)
             removed += 1
     return removed
+
+
+def discard_job(job_id: str) -> None:
+    """Delete a job's directory now (it has nothing anyone will come back for)."""
+    d = get_job_dir(job_id)
+    if d is not None:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def teardown() -> None:
