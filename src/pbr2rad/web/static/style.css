@@ -970,24 +970,19 @@ footer {
   footer { padding: 0.8rem 0.75rem 1rem; }
 }
 
-
-/* First-visit introduction (above the panels) */
-.intro {
-  max-width: 1600px; margin: 1rem auto 0; padding: 0.75rem 1.25rem;
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1.5rem;
-  font-size: 0.88rem; color: var(--muted);
+/* Empty Output panel: the three steps, in the panel's own type and colours */
+.start { padding: 0.9rem 0.2rem 0.4rem; max-width: 34rem; }
+.start-lead { font-size: 0.85rem; color: var(--text); margin-bottom: 0.9rem; line-height: 1.45; }
+.start-steps { list-style: none; margin: 0 0 0.8rem; padding: 0; display: grid; gap: 0.7rem; }
+.start-steps li { display: grid; grid-template-columns: 1.5rem 1fr; gap: 0.6rem; align-items: start; }
+.start-n {
+  width: 1.5rem; height: 1.5rem; border-radius: 50%;
+  border: 1px solid var(--border); color: var(--muted);
+  font-size: 0.72rem; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
 }
-.intro[hidden] { display: none; }
-.intro-lead { flex: 1 1 100%; font-size: 0.98rem; color: inherit; }
-.intro-lead strong { font-weight: 600; }
-.intro-steps {
-  flex: 1 1 32rem; margin: 0; padding-left: 1.2rem;
-  display: flex; flex-wrap: wrap; gap: 0.2rem 2rem;
+.start-steps strong {
+  display: block; font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--heading); margin-bottom: 0.1rem;
 }
-.intro-steps li { flex: 1 1 14rem; }
-.intro-actions { display: flex; gap: 1rem; }
-@media (max-width: 640px) {
-  .intro { padding: 0.75rem 1rem; }
-  .intro-steps { flex-direction: column; gap: 0.2rem; }
-  .intro-steps li { flex: 0 0 auto; }
-}
+.start-steps li span:last-child { font-size: 0.8rem; color: var(--muted-2); line-height: 1.4; }

@@ -1252,24 +1252,11 @@ document.getElementById("about-close").addEventListener("click", () => aboutDlg.
 aboutDlg.addEventListener("click", e => { if (e.target === aboutDlg) aboutDlg.close(); });  // backdrop click
 
 
-// ---------------------------------------------------------------------------
-// First-visit introduction
-// ---------------------------------------------------------------------------
-(function setupIntro() {
-  const intro = document.getElementById("intro");
-  if (!intro) return;
-  const KEY = "pbr2rad-intro-hidden";
-  let hidden = false;
-  try { hidden = localStorage.getItem(KEY) === "1"; } catch (e) { /* storage blocked */ }
-  if (hidden) intro.hidden = true;
-  document.getElementById("intro-dismiss").addEventListener("click", () => {
-    intro.hidden = true;
-    try { localStorage.setItem(KEY, "1"); } catch (e) { /* storage blocked */ }
-  });
-  // The About dialog holds the long version (workflow, limitations, privacy).
-  document.getElementById("intro-more").addEventListener("click", () => {
-    document.getElementById("about-btn").click();
-  });
+// The empty Output panel's guide links to the About dialog (workflow,
+// limitations, privacy).
+(function setupStartGuide() {
+  const more = document.getElementById("intro-more");
+  if (more) more.addEventListener("click", () => document.getElementById("about-btn").click());
 })();
 
 // The dropzone is a click target; make it one for the keyboard too.
