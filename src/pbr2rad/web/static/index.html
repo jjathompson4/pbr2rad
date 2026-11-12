@@ -11,8 +11,8 @@
   <meta property="og:url" content="https://pbr2rad.com/">
   <link rel="canonical" href="https://pbr2rad.com/">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <script src="/static/theme.js?v=43"></script>
-  <link rel="stylesheet" href="/static/style.css?v=43">
+  <script src="/static/theme.js?v=44"></script>
+  <link rel="stylesheet" href="/static/style.css?v=44">
 </head>
 <body>
 
@@ -95,21 +95,6 @@
     </ul>
   </div>
 </dialog>
-
-<!-- First-visit orientation: what this is and the three steps. Dismissible;
-     the choice is remembered. -->
-<section class="intro" id="intro" aria-label="How pbr2rad works">
-  <p class="intro-lead">Turn a PBR texture into a textured <strong>Radiance material</strong> for ClimateStudio and other Radiance tools.</p>
-  <ol class="intro-steps">
-    <li><strong>Pick</strong> a material from ambientCG or Poly Haven, or upload your own maps.</li>
-    <li><strong>Convert</strong> and compare the Radiance render with the reference; tune if needed.</li>
-    <li><strong>Download</strong> the zip and drop the folder into your materials library.</li>
-  </ol>
-  <div class="intro-actions">
-    <button type="button" class="link-btn" id="intro-more">How it works and limitations</button>
-    <button type="button" class="link-btn" id="intro-dismiss" aria-label="Hide this introduction">Hide</button>
-  </div>
-</section>
 
 <main>
   <!-- Middle: Source -->
@@ -245,7 +230,17 @@
 
       <!-- 2 · Override Properties: the material levers; re-renders the same job -->
       <div class="out-pane active" id="out-tab-override">
-        <div class="out-empty" id="tune-empty">Convert a material to tune it here.</div>
+        <!-- Empty state doubles as the first-visit guide: it sits in space the
+             panel has anyway and goes away with the first result. -->
+        <div class="out-empty start" id="tune-empty">
+          <p class="start-lead">Turn a PBR texture into a textured Radiance material for ClimateStudio and other Radiance tools.</p>
+          <ol class="start-steps">
+            <li><span class="start-n" aria-hidden="true">1</span><div><strong>Pick a material</strong><span>Browse ambientCG or Poly Haven on the left, or upload your own maps.</span></div></li>
+            <li><span class="start-n" aria-hidden="true">2</span><div><strong>Convert and compare</strong><span>The Radiance render appears here next to the reference. Tune it with the sliders if needed.</span></div></li>
+            <li><span class="start-n" aria-hidden="true">3</span><div><strong>Download the zip</strong><span>Drop the folder into your materials library.</span></div></li>
+          </ol>
+          <button type="button" class="link-btn" id="intro-more">How it works and limitations</button>
+        </div>
         <div class="tune" id="tune-panel" style="display:none">
           <div class="tune-head">
             <span>Override properties</span>
@@ -318,6 +313,6 @@
   </p>
 </footer>
 
-<script src="/static/app.js?v=43"></script>
+<script src="/static/app.js?v=44"></script>
 </body>
 </html>
